@@ -1,0 +1,38 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>trajectory_plan</name>
+  <version>0.1.0</version>
+  <description>Pick and place trajectory planning for Rainbow Robotics cobots</description>
+  <maintainer email="your.email@company.com">Your Name</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+    <!-- Additional build dependencies -->
+  <build_depend>tf2_geometry_msgs</build_depend>
+  <!-- <build_depend>std_msgs</build_depend> -->
+  
+  <depend>rclcpp</depend>
+  <depend>rclcpp_action</depend>
+  <depend>control_msgs</depend>
+  <depend>moveit_core</depend>
+  <depend>moveit_ros_planning_interface</depend>
+  <depend>moveit_ros_move_group</depend>
+  <depend>moveit_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
+  <depend>tf2_eigen</depend>
+  <depend>std_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>rb3_730es_u_moveit_config</depend>
+
+  <exec_depend>tf2_geometry_msgs</exec_depend>
+  <!-- <exec_depend>std_msgs</exec_depend> -->
+
+
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

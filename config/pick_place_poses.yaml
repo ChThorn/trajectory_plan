@@ -1,0 +1,23 @@
+# Pick and place pose configurations
+pick_poses:
+  object_1:
+    position: [0.3, 0.2, 0.2]
+    orientation: [0.0, 0.707, 0.0, 0.707]  # pointing down
+  object_2:
+    position: [0.4, 0.1, 0.15]
+    orientation: [0.0, 0.707, 0.0, 0.707]
+
+place_poses:
+  location_1:
+    position: [0.3, -0.2, 0.2]
+    orientation: [0.0, 0.707, 0.0, 0.707]
+  location_2:
+    position: [0.2, -0.3, 0.15]
+    orientation: [0.0, 0.707, 0.0, 0.707]
+
+# Motion parameters
+motion_params:
+  approach_distance: 0.1
+  retreat_distance: 0.1
+  velocity_scaling: 0.3
+  acceleration_scaling: 0.3
