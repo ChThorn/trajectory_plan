@@ -59,6 +59,8 @@ public:
   bool validateTrajectoryAgainstTable(const moveit_msgs::msg::RobotTrajectory& trajectory);
 
 private:
+
+rclcpp::TimerBase::SharedPtr setup_timer_;
   rclcpp::Node::SharedPtr node_;
   
   // Core components

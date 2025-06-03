@@ -21,12 +21,20 @@ TrajectoryPlanner::TrajectoryPlanner(const rclcpp::Node::SharedPtr& node)
   setTableDimensions(1.2, 0.8, 0.08, 0.0, 0.0);
   
   // Add collision object after short delay to ensure planning scene is ready
-  auto setup_timer = node_->create_wall_timer(
-    std::chrono::seconds(3),
-    [this]() {
-      setupTableCollisionObject();
-      addWorkspaceConstraints();
-    });
+//   auto setup_timer = node_->create_wall_timer(
+//     std::chrono::seconds(3),
+//     [this]() {
+//       setupTableCollisionObject();
+//       addWorkspaceConstraints();
+//     });
+
+    setup_timer_ = node_->create_wall_timer(
+        std::chrono::seconds(3),
+        [this]() {
+        setupTableCollisionObject();
+        addWorkspaceConstraints();
+        setup_timer_->cancel(); // Cancel after first execution
+        });
   
   RCLCPP_INFO(node_->get_logger(), "🛡️ Table collision prevention will be set up in 3 seconds...");
 }
