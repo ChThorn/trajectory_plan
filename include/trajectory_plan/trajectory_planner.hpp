@@ -58,6 +58,11 @@ public:
   // Additional validation methods
   bool validateTrajectoryAgainstTable(const moveit_msgs::msg::RobotTrajectory& trajectory);
 
+  void enableWorkspaceVisualization(bool enable = true);
+  void setWorkspaceVisualizationColor(float r, float g, float b, float a = 0.7);
+  bool validatePoseInWorkspace(const geometry_msgs::msg::Pose& pose);
+  void printWorkspaceLimits();
+
 private:
 
 rclcpp::TimerBase::SharedPtr setup_timer_;

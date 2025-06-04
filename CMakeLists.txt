@@ -16,6 +16,7 @@ find_package(tf2 REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(control_msgs REQUIRED)
 find_package(rclcpp_action REQUIRED)
+find_package(visualization_msgs REQUIRED)
 
 # Add include directories
 include_directories(
@@ -46,6 +47,7 @@ ament_target_dependencies(${PROJECT_NAME}
   tf2_eigen
   tf2
   geometry_msgs
+  visualization_msgs
 )
 
 # Create the pick and place node executable

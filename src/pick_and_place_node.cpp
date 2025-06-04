@@ -162,6 +162,8 @@ private:
       // Place position: Your original was CORRECT for table objects!
       396.54, 141.11, 61.74,  // Keep your X,Y, but safe height for object
       0.69, 177.68, 24.46          // Simplified orientation to avoid elbow issues 
+    // -249.99, 46.87, 720.50, 
+    // 180.00, 180.00, -179.99
     );
   }
   
@@ -281,6 +283,61 @@ private:
       RCLCPP_INFO(get_logger(), "✅ Enhanced modular trajectory planner initialized with collision prevention");
     }
   }
+
+//   void setupEnhancedWorkspaceWithVisualization()
+// {
+//   RCLCPP_INFO(get_logger(), "🔳 Setting up workspace boundary visualization...");
+  
+//   // Enable workspace visualization
+//   trajectory_planner_->enableWorkspaceVisualization(true);
+  
+//   // Set workspace color (cyan/blue for workspace, different from green table)
+//   trajectory_planner_->setWorkspaceVisualizationColor(0.0, 1.0, 1.0, 0.4); // Cyan
+  
+//   // Print workspace limits for verification
+//   trajectory_planner_->printWorkspaceLimits();
+  
+//   RCLCPP_INFO(get_logger(), "✅ Workspace boundary visualization enabled!");
+//   RCLCPP_INFO(get_logger(), "   📋 Check RViz to see the cyan workspace boundary box");
+//   RCLCPP_INFO(get_logger(), "   📋 Robot end-effector is constrained within this boundary");
+// }
+
+// void setupEnhancedWorkspaceWithVisualization()
+// {
+//   RCLCPP_INFO(get_logger(), "🔳 Setting up ENHANCED workspace boundary visualization...");
+  
+//   // Enable workspace visualization
+//   trajectory_planner_->enableWorkspaceVisualization(true);
+  
+//   // Make it MORE VISIBLE with brighter color and higher opacity
+//   trajectory_planner_->setWorkspaceVisualizationColor(
+//     0.0, 1.0, 1.0, 0.8); // Bright cyan with 80% opacity (was 40%)
+  
+//   // Print workspace limits for verification
+//   trajectory_planner_->printWorkspaceLimits();
+  
+//   RCLCPP_INFO(get_logger(), "✅ ENHANCED workspace boundary visualization enabled!");
+//   RCLCPP_INFO(get_logger(), "   📋 Check RViz to see the BRIGHT CYAN workspace boundary box");
+//   RCLCPP_INFO(get_logger(), "   📋 Robot end-effector is constrained within this boundary");
+//   RCLCPP_INFO(get_logger(), "   🔧 Add MarkerArray topic '/workspace_boundary' in RViz if not visible");
+// }
+
+    void setupEnhancedWorkspaceWithVisualization()
+    {
+    RCLCPP_INFO(get_logger(), "🔳 Setting up ULTRA-VISIBLE workspace boundary...");
+    
+    // Enable workspace visualization
+    trajectory_planner_->enableWorkspaceVisualization(true);
+    
+    // ULTRA-VISIBLE: Bright red, fully opaque
+    trajectory_planner_->setWorkspaceVisualizationColor(1.0, 0.0, 0.0, 1.0); // BRIGHT RED
+    
+    trajectory_planner_->printWorkspaceLimits();
+    
+    RCLCPP_INFO(get_logger(), "✅ ULTRA-VISIBLE workspace boundary enabled!");
+    RCLCPP_INFO(get_logger(), "   🔴 Look for BRIGHT RED wireframe box in RViz");
+    RCLCPP_INFO(get_logger(), "   📋 Add '/workspace_boundary' MarkerArray in RViz if needed");
+    }
   
   void executeEnhancedDemo()
   {
@@ -292,6 +349,21 @@ private:
     RCLCPP_INFO(get_logger(), "   🔧 Modular architecture with separated concerns");
     
     initialize_planner();
+
+    setupEnhancedWorkspaceWithVisualization();
+    // Validate poses against workspace before execution
+  RCLCPP_INFO(get_logger(), "🔍 Validating poses against workspace boundary...");
+  
+  bool pick_valid = trajectory_planner_->validatePoseInWorkspace(pick_pose_);
+  bool place_valid = trajectory_planner_->validatePoseInWorkspace(place_pose_);
+  
+  if (!pick_valid || !place_valid) {
+    RCLCPP_ERROR(get_logger(), "❌ One or more poses are outside workspace boundary!");
+    RCLCPP_INFO(get_logger(), "💡 Adjust poses to be within the cyan boundary box visible in RViz");
+    return;
+  }
+  
+  RCLCPP_INFO(get_logger(), "✅ All poses validated - within workspace boundary");
     
     if (!trajectory_planner_) {
       RCLCPP_ERROR(get_logger(), "❌ Failed to initialize enhanced modular trajectory planner");

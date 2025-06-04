@@ -18,7 +18,18 @@ TrajectoryPlanner::TrajectoryPlanner(const rclcpp::Node::SharedPtr& node)
   workspace_config_ = std::make_unique<WorkspaceConfig>(node_, move_group_);
   
   // Set up table collision prevention with your working dimensions
-  setTableDimensions(1.2, 0.8, 0.08, 0.0, 0.0);
+  setTableDimensions(0.98, 0.49, 0.04, 0.0, 0.0);
+
+  // Set up workspace with visualization
+//   workspace_config_ = std::make_unique<WorkspaceConfig>(node_, move_group_);
+  
+  // Configure workspace dimensions (adjust these to your robot's reach)
+  workspace_config_->setWorkspaceDimensions(1.4, 1.2, 1.0);  // 140cm x 120cm x 100cm (was 80x80x60)
+  workspace_config_->setWorkspacePosition(0.4, 0.0, 0.5);
+  
+  // Enable visualization with blue transparent boundary
+  workspace_config_->enableWorkspaceVisualization(true);
+  workspace_config_->setWorkspaceBoundaryColor(0.0, 1.0, 1.0, 0.7); // RED with 100% opacity
   
   // Add collision object after short delay to ensure planning scene is ready
 //   auto setup_timer = node_->create_wall_timer(
@@ -144,6 +155,26 @@ bool TrajectoryPlanner::addWorkspaceConstraints()
 bool TrajectoryPlanner::validateTrajectoryAgainstTable(const moveit_msgs::msg::RobotTrajectory& trajectory)
 {
   return table_config_->validateTrajectoryAgainstTable(trajectory);
+}
+
+void TrajectoryPlanner::enableWorkspaceVisualization(bool enable)
+{
+  workspace_config_->enableWorkspaceVisualization(enable);
+}
+
+void TrajectoryPlanner::setWorkspaceVisualizationColor(float r, float g, float b, float a)
+{
+  workspace_config_->setWorkspaceBoundaryColor(r, g, b, a);
+}
+
+bool TrajectoryPlanner::validatePoseInWorkspace(const geometry_msgs::msg::Pose& pose)
+{
+  return workspace_config_->validatePoseInWorkspace(pose);
+}
+
+void TrajectoryPlanner::printWorkspaceLimits()
+{
+  workspace_config_->printWorkspaceLimits();
 }
 
 } // namespace trajectory_plan
