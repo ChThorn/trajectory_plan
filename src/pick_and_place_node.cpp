@@ -241,7 +241,7 @@ private:
     place_pose_.orientation.z = q_place.z();
     place_pose_.orientation.w = q_place.w();
     
-    RCLCPP_INFO(get_logger(), "");
+    RCLCPP_INFO(get_logger(), " ");
     RCLCPP_INFO(get_logger(), "📍 COLLISION-SAFE POSES CONFIGURED:");
     RCLCPP_INFO(get_logger(), "   Pick:  [%.1f, %.1f, %.1f] mm | RPY: [%.1f°, %.1f°, %.1f°]", 
                 pick_x_mm, pick_y_mm, pick_z_mm, pick_roll_deg, pick_pitch_deg, pick_yaw_deg);
