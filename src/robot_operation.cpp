@@ -144,55 +144,119 @@ bool RobotOperation::planAndExecuteCartesianPath(const std::vector<geometry_msgs
 }
 
 bool RobotOperation::executeProfessionalPickAndPlace(
-  double pick_x_mm, double pick_y_mm, double pick_z_mm,
-  double pick_roll_deg, double pick_pitch_deg, double pick_yaw_deg,
-  double place_x_mm, double place_y_mm, double place_z_mm,
-  double place_roll_deg, double place_pitch_deg, double place_yaw_deg,
-  double clearance_height_mm)
+    double pick_x_mm, double pick_y_mm, double pick_z_mm,
+    double pick_roll_deg, double pick_pitch_deg, double pick_yaw_deg,
+    double place_x_mm, double place_y_mm, double place_z_mm,
+    double place_roll_deg, double place_pitch_deg, double place_yaw_deg,
+    double clearance_height_mm)
 {
-  if (!rclcpp::ok()) return false;
-  RCLCPP_INFO(node_->get_logger(), "🏭 PRODUCTION Pick and Place Sequence Starting...");
+    if (!rclcpp::ok()) return false;
+    RCLCPP_INFO(node_->get_logger(), "🏭 PRODUCTION Pick and Place Sequence Starting...");
 
-  auto pick_pose = createPoseFromMmAndDegrees(pick_x_mm, pick_y_mm, pick_z_mm, pick_roll_deg, pick_pitch_deg, pick_yaw_deg);
-  auto place_pose = createPoseFromMmAndDegrees(place_x_mm, place_y_mm, place_z_mm, place_roll_deg, place_pitch_deg, place_yaw_deg);
-  double clearance_m = clearance_height_mm / 1000.0;
+    // Create all poses upfront for validation
+    auto pick_pose = createPoseFromMmAndDegrees(pick_x_mm, pick_y_mm, pick_z_mm, 
+                                               pick_roll_deg, pick_pitch_deg, pick_yaw_deg);
+    auto place_pose = createPoseFromMmAndDegrees(place_x_mm, place_y_mm, place_z_mm, 
+                                                place_roll_deg, place_pitch_deg, place_yaw_deg);
+    double clearance_m = clearance_height_mm / 1000.0;
 
-  auto pick_approach_pose = pick_pose;
-  pick_approach_pose.position.z += clearance_m;
+    auto pick_approach_pose = pick_pose;
+    pick_approach_pose.position.z += clearance_m;
 
-  auto place_approach_pose = place_pose;
-  place_approach_pose.position.z += clearance_m;
-  
-  if (!moveToHome()) return false;
-  
-  RCLCPP_INFO(node_->get_logger(), "🎯 Starting PICK sequence...");
-  if (!planToPose(pick_approach_pose) || !executePlan()) return false;
-  openGripper();
-  
-  RCLCPP_INFO(node_->get_logger(), "⬇️ Moving linearly to PICK pose...");
-  if (!planAndExecuteCartesianPath({pick_pose})) { moveToHome(); return false; }
-  closeGripper();
-  
-  RCLCPP_INFO(node_->get_logger(), "⬆️ Retreating linearly from PICK pose...");
-  if (!planAndExecuteCartesianPath({pick_approach_pose})) { moveToHome(); return false; }
-  
-  RCLCPP_INFO(node_->get_logger(), "🏠 Returning to Home as the intermediate position...");
-  if (!moveToHome()) return false;
-  
-  RCLCPP_INFO(node_->get_logger(), "📦 Starting PLACE sequence...");
-  if (!planToPose(place_approach_pose) || !executePlan()) return false;
-  
-  RCLCPP_INFO(node_->get_logger(), "⬇️ Moving linearly to PLACE pose...");
-  if (!planAndExecuteCartesianPath({place_pose})) { moveToHome(); return false; }
-  openGripper();
-  
-  RCLCPP_INFO(node_->get_logger(), "⬆️ Retreating linearly from PLACE pose...");
-  if (!planAndExecuteCartesianPath({place_approach_pose})) { moveToHome(); return false; }
-  
-  moveToHome();
-  
-  RCLCPP_INFO(node_->get_logger(), "🎉 PRODUCTION Pick and Place completed successfully!");
-  return true;
+    auto place_approach_pose = place_pose;
+    place_approach_pose.position.z += clearance_m;
+    
+    // Lambda for safe recovery to home
+    auto safe_recovery = [this]() -> bool {
+        if (!rclcpp::ok()) return false;
+        RCLCPP_WARN(node_->get_logger(), "🏠 Attempting recovery to home position...");
+        return moveToHome();
+    };
+    
+    // Execute sequence with recovery and shutdown checks on each step
+    if (!rclcpp::ok()) return false;
+    if (!moveToHome()) {
+        RCLCPP_ERROR(node_->get_logger(), "❌ Failed to move to home at start");
+        return false;
+    }
+    
+    // PICK SEQUENCE
+    if (!rclcpp::ok()) return false;
+    RCLCPP_INFO(node_->get_logger(), "🎯 Starting PICK sequence...");
+    if (!planToPose(pick_approach_pose) || !executePlan()) {
+        RCLCPP_ERROR(node_->get_logger(), "❌ Failed to reach pick approach pose");
+        safe_recovery();
+        return false;
+    }
+    
+    if (!rclcpp::ok()) return false;
+    openGripper();
+    
+    if (!rclcpp::ok()) return false;
+    RCLCPP_INFO(node_->get_logger(), "⬇️ Moving linearly to PICK pose...");
+    if (!planAndExecuteCartesianPath({pick_pose})) {
+        RCLCPP_ERROR(node_->get_logger(), "❌ Failed to reach pick pose");
+        safe_recovery();
+        return false;
+    }
+    
+    if (!rclcpp::ok()) return false;
+    closeGripper();
+    
+    if (!rclcpp::ok()) return false;
+    RCLCPP_INFO(node_->get_logger(), "⬆️ Retreating linearly from PICK pose...");
+    if (!planAndExecuteCartesianPath({pick_approach_pose})) {
+        RCLCPP_ERROR(node_->get_logger(), "❌ Failed to retreat from pick pose");
+        // Critical failure - object may be grasped, attempt gentle recovery
+        openGripper(); // Release object before recovery
+        safe_recovery();
+        return false;
+    }
+    
+    // Return to home as intermediate safe position
+    if (!rclcpp::ok()) return false;
+    RCLCPP_INFO(node_->get_logger(), "🏠 Returning to Home as intermediate position...");
+    if (!moveToHome()) {
+        RCLCPP_ERROR(node_->get_logger(), "❌ Failed to return to home after pick");
+        return false;
+    }
+    
+    // PLACE SEQUENCE
+    if (!rclcpp::ok()) return false;
+    RCLCPP_INFO(node_->get_logger(), "📦 Starting PLACE sequence...");
+    if (!planToPose(place_approach_pose) || !executePlan()) {
+        RCLCPP_ERROR(node_->get_logger(), "❌ Failed to reach place approach pose");
+        safe_recovery();
+        return false;
+    }
+    
+    if (!rclcpp::ok()) return false;
+    RCLCPP_INFO(node_->get_logger(), "⬇️ Moving linearly to PLACE pose...");
+    if (!planAndExecuteCartesianPath({place_pose})) {
+        RCLCPP_ERROR(node_->get_logger(), "❌ Failed to reach place pose");
+        safe_recovery();
+        return false;
+    }
+    
+    if (!rclcpp::ok()) return false;
+    openGripper();
+    
+    if (!rclcpp::ok()) return false;
+    RCLCPP_INFO(node_->get_logger(), "⬆️ Retreating linearly from PLACE pose...");
+    if (!planAndExecuteCartesianPath({place_approach_pose})) {
+        RCLCPP_ERROR(node_->get_logger(), "❌ Failed to retreat from place pose");
+        safe_recovery();
+        return false;
+    }
+    
+    // Final return to home
+    if (!rclcpp::ok()) return false;
+    if (!moveToHome()) {
+        RCLCPP_WARN(node_->get_logger(), "⚠️ Failed final return to home, but operation completed");
+    }
+    
+    RCLCPP_INFO(node_->get_logger(), "🎉 PRODUCTION Pick and Place completed successfully!");
+    return true;
 }
 
 // --- [FIXED] Fully implemented function ---

@@ -10,27 +10,47 @@
 namespace trajectory_plan
 {
 
-struct PlannerConfiguration
-{
-  struct {
-    double length = 0.98, width = 0.49, height = 0.04;
-    double x_offset = 0.0, y_offset = 0.0, z_position = -0.027;
-  } table;
-  
-  struct {
-    double width = 1.4, depth = 1.2, height = 1.0;
-    double x_position = 0.4, y_position = 0.0, z_position = 0.5;
-    bool visualization_enabled = false;
-  } workspace;
-  
-  struct {
-    double velocity_scaling = 0.3, acceleration_scaling = 0.3;
-  } robot;
-};
+    struct PlannerConfiguration
+    {
+        struct {
+            double length = 0.98, width = 0.49, height = 0.04;
+            double x_offset = 0.0, y_offset = 0.0, z_position = -0.027;
+        } table;
+        
+        struct {
+            double width = 1.4, depth = 1.2, height = 1.0;
+            double x_position = 0.4, y_position = 0.0, z_position = 0.5;
+            bool visualization_enabled = false;
+        } workspace;
+        
+        struct {
+            double velocity_scaling = 0.3, acceleration_scaling = 0.3;
+            double planning_time = 5.0;           // NEW: configurable planning time
+            int planning_attempts = 10;           // NEW: configurable planning attempts
+            double cartesian_step_size = 0.01;   // NEW: configurable Cartesian step size
+            double cartesian_jump_threshold = 0.0; // NEW: configurable jump threshold
+        } robot;
+        
+        struct {
+            double gripper_action_time = 1.0;     // NEW: configurable gripper timing
+            std::string manipulation_group = "manipulation"; // NEW: configurable group name
+        } gripper;
+    };
 
 class TrajectoryPlanner
 {
 public:
+  
+ ~TrajectoryPlanner() {
+    // Ensure proper cleanup of timers and publishers
+    if (visualization_timer_) {
+        visualization_timer_->cancel();
+    }
+    if (marker_publisher_) {
+        marker_publisher_.reset();
+    }
+    RCLCPP_DEBUG(node_->get_logger(), "TrajectoryPlanner destroyed");
+  }
   explicit TrajectoryPlanner(const rclcpp::Node::SharedPtr& node);
   
   bool initialize();
