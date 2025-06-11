@@ -1,9 +1,15 @@
 #include <rclcpp/rclcpp.hpp>
 #include "trajectory_plan/trajectory_planner.hpp"
-#include <geometry_msgs/msg/pose.hpp>
 #include <control_msgs/action/follow_joint_trajectory.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
 
+/**
+ * @class PickAndPlaceNode
+ * @brief The main node for running the pick and place demonstration.
+ *
+ * This node is responsible for loading parameters, initializing the TrajectoryPlanner,
+ * and triggering the main pick and place sequence.
+ */
 class PickAndPlaceNode : public rclcpp::Node
 {
 public:
@@ -11,101 +17,99 @@ public:
   {
     RCLCPP_INFO(get_logger(), "🚀 Pick and Place Node starting...");
     
-    // Load configuration from parameters
+    // Load parameters from the config file
     loadConfiguration();
-    
-    // Print configuration
     printConfiguration();
     
-    // Set up demo poses
-    setupDemoPoses();
-    
-    // Initialize planner (will be done in timer callback)
-    trajectory_planner_ = nullptr;
-    
-    // Create timer for delayed initialization and demo execution
+    // A timer ensures that initialization doesn't start until the rest of the ROS 2 system
+    // (e.g., robot_state_publisher, MoveIt servers) has had time to launch.
     timer_ = create_wall_timer(
-      std::chrono::seconds(5),  // Give system time to initialize
-      std::bind(&PickAndPlaceNode::initializeAndExecuteDemo, this));
-      
-    RCLCPP_INFO(get_logger(), "✅ Node initialized - demo will start in 5 seconds");
+      std::chrono::seconds(5),
+      std::bind(&PickAndPlaceNode::main_task, this));
   }
 
 private:
+  /**
+   * @brief Loads all necessary parameters from the ROS parameter server.
+   */
   void loadConfiguration()
   {
-    // Declare and get parameters with defaults
-    declare_parameter("table.length", 0.98);
-    declare_parameter("table.width", 0.49);
-    declare_parameter("table.height", 0.04);
-    declare_parameter("table.x_offset", 0.0);
-    declare_parameter("table.y_offset", 0.0);
+    // Declare and read parameters with default values
+    this->declare_parameter<double>("table.length", 0.98);
+    this->declare_parameter<double>("table.width", 0.49);
+    this->declare_parameter<double>("table.height", 0.04);
+    this->declare_parameter<double>("table.x_offset", 0.0);
+    this->declare_parameter<double>("table.y_offset", 0.0);
+    this->declare_parameter<double>("table.z_position", -0.027);
+
+    this->declare_parameter<double>("workspace.width", 1.4);
+    this->declare_parameter<double>("workspace.depth", 1.2);
+    this->declare_parameter<double>("workspace.height", 1.0);
+    this->declare_parameter<double>("workspace.x_position", 0.4);
+    this->declare_parameter<double>("workspace.y_position", 0.0);
+    this->declare_parameter<double>("workspace.z_position", 0.5);
+    this->declare_parameter<bool>("workspace.visualization_enabled", true);
     
-    declare_parameter("workspace.width", 1.4);
-    declare_parameter("workspace.depth", 1.2);
-    declare_parameter("workspace.height", 1.0);
-    declare_parameter("workspace.x_position", 0.4);
-    declare_parameter("workspace.y_position", 0.0);
-    declare_parameter("workspace.z_position", 0.5);
-    declare_parameter("workspace.visualization_enabled", true);
+    this->declare_parameter<double>("robot.velocity_scaling", 0.3);
+    this->declare_parameter<double>("robot.acceleration_scaling", 0.3);
+    this->declare_parameter<bool>("robot.smooth_motion", true);
     
-    declare_parameter("robot.velocity_scaling", 0.3);
-    declare_parameter("robot.acceleration_scaling", 0.3);
-    declare_parameter("robot.smooth_motion", true);
+    this->declare_parameter<double>("demo.pick_x_mm", 250.0);
+    this->declare_parameter<double>("demo.pick_y_mm", 150.0);
+    this->declare_parameter<double>("demo.pick_z_mm", 50.0);
+    this->declare_parameter<double>("demo.pick_roll_deg", 0.0);
+    this->declare_parameter<double>("demo.pick_pitch_deg", 90.0);
+    this->declare_parameter<double>("demo.pick_yaw_deg", 0.0);
     
-    declare_parameter("demo.pick_x_mm", 250.0);  // Changed to mm
-    declare_parameter("demo.pick_y_mm", 150.0);
-    declare_parameter("demo.pick_z_mm", 50.0);
-    declare_parameter("demo.pick_roll_deg", 0.0);  // Added orientation in degrees
-    declare_parameter("demo.pick_pitch_deg", 90.0);
-    declare_parameter("demo.pick_yaw_deg", 0.0);
+    this->declare_parameter<double>("demo.place_x_mm", 350.0);
+    this->declare_parameter<double>("demo.place_y_mm", -150.0);
+    this->declare_parameter<double>("demo.place_z_mm", 50.0);
+    this->declare_parameter<double>("demo.place_roll_deg", 0.0);
+    this->declare_parameter<double>("demo.place_pitch_deg", 90.0);
+    this->declare_parameter<double>("demo.place_yaw_deg", 0.0);
     
-    declare_parameter("demo.place_x_mm", 350.0);  // Changed to mm
-    declare_parameter("demo.place_y_mm", -150.0);
-    declare_parameter("demo.place_z_mm", 50.0);
-    declare_parameter("demo.place_roll_deg", 0.0);  // Added orientation in degrees
-    declare_parameter("demo.place_pitch_deg", 90.0);
-    declare_parameter("demo.place_yaw_deg", 0.0);
+    this->declare_parameter<double>("demo.clearance_height_mm", 50.0);
     
-    declare_parameter("demo.clearance_height_mm", 50.0);  // Added clearance height
+    // Read parameters into the config structs
+    config_.table.length = this->get_parameter("table.length").as_double();
+    config_.table.width = this->get_parameter("table.width").as_double();
+    config_.table.height = this->get_parameter("table.height").as_double();
+    config_.table.x_offset = this->get_parameter("table.x_offset").as_double();
+    config_.table.y_offset = this->get_parameter("table.y_offset").as_double();
+    config_.table.z_position = this->get_parameter("table.z_position").as_double();
     
-    // Load configuration
-    config_.table.length = get_parameter("table.length").as_double();
-    config_.table.width = get_parameter("table.width").as_double();
-    config_.table.height = get_parameter("table.height").as_double();
-    config_.table.x_offset = get_parameter("table.x_offset").as_double();
-    config_.table.y_offset = get_parameter("table.y_offset").as_double();
+    config_.workspace.width = this->get_parameter("workspace.width").as_double();
+    config_.workspace.depth = this->get_parameter("workspace.depth").as_double();
+    config_.workspace.height = this->get_parameter("workspace.height").as_double();
+    config_.workspace.x_position = this->get_parameter("workspace.x_position").as_double();
+    config_.workspace.y_position = this->get_parameter("workspace.y_position").as_double();
+    config_.workspace.z_position = this->get_parameter("workspace.z_position").as_double();
+    config_.workspace.visualization_enabled = this->get_parameter("workspace.visualization_enabled").as_bool();
     
-    config_.workspace.width = get_parameter("workspace.width").as_double();
-    config_.workspace.depth = get_parameter("workspace.depth").as_double();
-    config_.workspace.height = get_parameter("workspace.height").as_double();
-    config_.workspace.x_position = get_parameter("workspace.x_position").as_double();
-    config_.workspace.y_position = get_parameter("workspace.y_position").as_double();
-    config_.workspace.z_position = get_parameter("workspace.z_position").as_double();
-    config_.workspace.visualization_enabled = get_parameter("workspace.visualization_enabled").as_bool();
+    config_.robot.velocity_scaling = this->get_parameter("robot.velocity_scaling").as_double();
+    config_.robot.acceleration_scaling = this->get_parameter("robot.acceleration_scaling").as_double();
     
-    config_.robot.velocity_scaling = get_parameter("robot.velocity_scaling").as_double();
-    config_.robot.acceleration_scaling = get_parameter("robot.acceleration_scaling").as_double();
+    demo_config_.pick_x_mm = this->get_parameter("demo.pick_x_mm").as_double();
+    demo_config_.pick_y_mm = this->get_parameter("demo.pick_y_mm").as_double();
+    demo_config_.pick_z_mm = this->get_parameter("demo.pick_z_mm").as_double();
+    demo_config_.pick_roll_deg = this->get_parameter("demo.pick_roll_deg").as_double();
+    demo_config_.pick_pitch_deg = this->get_parameter("demo.pick_pitch_deg").as_double();
+    demo_config_.pick_yaw_deg = this->get_parameter("demo.pick_yaw_deg").as_double();
     
-    // Load demo poses (now in mm/degrees)
-    demo_config_.pick_x_mm = get_parameter("demo.pick_x_mm").as_double();
-    demo_config_.pick_y_mm = get_parameter("demo.pick_y_mm").as_double();
-    demo_config_.pick_z_mm = get_parameter("demo.pick_z_mm").as_double();
-    demo_config_.pick_roll_deg = get_parameter("demo.pick_roll_deg").as_double();
-    demo_config_.pick_pitch_deg = get_parameter("demo.pick_pitch_deg").as_double();
-    demo_config_.pick_yaw_deg = get_parameter("demo.pick_yaw_deg").as_double();
+    demo_config_.place_x_mm = this->get_parameter("demo.place_x_mm").as_double();
+    demo_config_.place_y_mm = this->get_parameter("demo.place_y_mm").as_double();
+    demo_config_.place_z_mm = this->get_parameter("demo.place_z_mm").as_double();
+    demo_config_.place_roll_deg = this->get_parameter("demo.place_roll_deg").as_double();
+    demo_config_.place_pitch_deg = this->get_parameter("demo.place_pitch_deg").as_double();
+    demo_config_.place_yaw_deg = this->get_parameter("demo.place_yaw_deg").as_double();
     
-    demo_config_.place_x_mm = get_parameter("demo.place_x_mm").as_double();
-    demo_config_.place_y_mm = get_parameter("demo.place_y_mm").as_double();
-    demo_config_.place_z_mm = get_parameter("demo.place_z_mm").as_double();
-    demo_config_.place_roll_deg = get_parameter("demo.place_roll_deg").as_double();
-    demo_config_.place_pitch_deg = get_parameter("demo.place_pitch_deg").as_double();
-    demo_config_.place_yaw_deg = get_parameter("demo.place_yaw_deg").as_double();
-    
-    demo_config_.clearance_height_mm = get_parameter("demo.clearance_height_mm").as_double();
-    demo_config_.smooth_motion = get_parameter("robot.smooth_motion").as_bool();
+    demo_config_.clearance_height_mm = this->get_parameter("demo.clearance_height_mm").as_double();
+    demo_config_.smooth_motion = this->get_parameter("robot.smooth_motion").as_bool();
   }
   
+  /**
+   * @brief Prints the loaded configuration to the console.
+   */
   void printConfiguration()
   {
     RCLCPP_INFO(get_logger(), "📋 Configuration loaded:");
@@ -126,82 +130,53 @@ private:
     RCLCPP_INFO(get_logger(), "         clearance=%.1f mm", demo_config_.clearance_height_mm);
   }
   
-  void setupDemoPoses()
+  /**
+   * @brief The main task triggered by the timer to initialize and run the demo.
+   */
+  void main_task()
   {
-    RCLCPP_INFO(get_logger(), "🎯 Demo poses configured:");
-    RCLCPP_INFO(get_logger(), "   Pick:  [%.1f, %.1f, %.1f] mm, [%.1f°, %.1f°, %.1f°]", 
-                demo_config_.pick_x_mm, demo_config_.pick_y_mm, demo_config_.pick_z_mm,
-                demo_config_.pick_roll_deg, demo_config_.pick_pitch_deg, demo_config_.pick_yaw_deg);
-    RCLCPP_INFO(get_logger(), "   Place: [%.1f, %.1f, %.1f] mm, [%.1f°, %.1f°, %.1f°]", 
-                demo_config_.place_x_mm, demo_config_.place_y_mm, demo_config_.place_z_mm,
-                demo_config_.place_roll_deg, demo_config_.place_pitch_deg, demo_config_.place_yaw_deg);
-    RCLCPP_INFO(get_logger(), "   Clearance: %.1f mm", demo_config_.clearance_height_mm);
-  }
-  
-  void initializeAndExecuteDemo()
-  {
-    timer_->cancel();  // Run only once
+    timer_->cancel(); // Ensure this task runs only once
     
-    RCLCPP_INFO(get_logger(), "🔧 Initializing trajectory planner...");
-    
-    // Create and initialize trajectory planner
-    trajectory_planner_ = std::make_unique<trajectory_plan::TrajectoryPlanner>(shared_from_this());
-    
-    if (!trajectory_planner_->initialize()) {
-      RCLCPP_ERROR(get_logger(), "❌ Failed to initialize trajectory planner");
-      return;
-    }
-    
-    // Update configuration
-    trajectory_planner_->updateConfiguration(config_);
-    
-    // Enable workspace visualization
-    if (config_.workspace.visualization_enabled) {
-      trajectory_planner_->enableWorkspaceVisualization(true);
-      trajectory_planner_->setWorkspaceVisualizationColor(1.0, 0.0, 0.0, 1.0); // Red
-    }
-    
-    // Wait for controller to be ready
-    if (!waitForController()) {
-      RCLCPP_ERROR(get_logger(), "❌ Controller not ready");
-      return;
-    }
-    
-    // Execute the demo
-    executeDemo();
-  }
-  
-  bool waitForController()
-  {
-    RCLCPP_INFO(get_logger(), "🔌 Waiting for controller...");
-    
+    RCLCPP_INFO(get_logger(), "🔌 Checking for controller action server...");
     using FollowJointTrajectory = control_msgs::action::FollowJointTrajectory;
     auto action_client = rclcpp_action::create_client<FollowJointTrajectory>(
       this, "joint_trajectory_controller/follow_joint_trajectory");
-    
+      
     if (!action_client->wait_for_action_server(std::chrono::seconds(10))) {
-      RCLCPP_ERROR(get_logger(), "❌ Controller not available");
-      return false;
+      RCLCPP_ERROR(get_logger(), "❌ Controller action server not available after 10s. Shutting down.");
+      rclcpp::shutdown();
+      return;
+    }
+    RCLCPP_INFO(get_logger(), "✅ Controller is ready.");
+    
+    // 1. Create the planner instance
+    trajectory_planner_ = std::make_unique<trajectory_plan::TrajectoryPlanner>(shared_from_this());
+    
+    // 2. Pass the loaded configuration to the planner
+    trajectory_planner_->updateConfiguration(config_);
+
+    // 3. The initialize() method handles all setup sequentially (MoveIt, collision scene, constraints).
+    if (!trajectory_planner_->initialize()) {
+        RCLCPP_ERROR(get_logger(), "❌ Failed to initialize TrajectoryPlanner. Shutting down.");
+        rclcpp::shutdown();
+        return;
     }
     
-    RCLCPP_INFO(get_logger(), "✅ Controller ready");
-    return true;
+    // 4. Now that initialization is complete, it's safe to execute the demo.
+    executeDemo();
   }
   
+  /**
+   * @brief Executes the main pick and place demonstration sequence.
+   */
   void executeDemo()
   {
-    RCLCPP_INFO(get_logger(), "🚀 Starting pick and place demo...");
+    RCLCPP_INFO(get_logger(), "🚀 Starting production-safe pick and place demo...");
     
-    // Configure motion settings
     if (demo_config_.smooth_motion) {
       trajectory_planner_->setSmoothMotion(true);
     }
     
-    // Print workspace limits
-    trajectory_planner_->printWorkspaceLimits();
-    
-    // Use professional pick-and-place with mm/degrees input
-    RCLCPP_INFO(get_logger(), "📦 Executing PROFESSIONAL pick and place...");
     bool success = trajectory_planner_->executeProfessionalPickAndPlace(
       demo_config_.pick_x_mm, demo_config_.pick_y_mm, demo_config_.pick_z_mm,
       demo_config_.pick_roll_deg, demo_config_.pick_pitch_deg, demo_config_.pick_yaw_deg,
@@ -211,17 +186,17 @@ private:
     );
     
     if (success) {
-      RCLCPP_INFO(get_logger(), "🎉 PROFESSIONAL pick and place demo completed successfully!");
+      RCLCPP_INFO(get_logger(), "🎉 Demo completed successfully!");
     } else {
-      RCLCPP_ERROR(get_logger(), "❌ PROFESSIONAL pick and place demo failed");
+      RCLCPP_ERROR(get_logger(), "❌ Demo failed.");
     }
     
-    RCLCPP_INFO(get_logger(), "✅ Demo sequence completed");
+    // Shutdown the node after the demo is complete
+    rclcpp::shutdown();
   }
   
-  // Configuration structures
+  // --- Configuration Structs ---
   trajectory_plan::PlannerConfiguration config_;
-  
   struct DemoConfiguration {
     double pick_x_mm, pick_y_mm, pick_z_mm;
     double pick_roll_deg, pick_pitch_deg, pick_yaw_deg;
@@ -231,7 +206,7 @@ private:
     bool smooth_motion;
   } demo_config_;
   
-  // Components
+  // --- Components ---
   std::unique_ptr<trajectory_plan::TrajectoryPlanner> trajectory_planner_;
   rclcpp::TimerBase::SharedPtr timer_;
 };
@@ -239,18 +214,11 @@ private:
 int main(int argc, char** argv)
 {
   rclcpp::init(argc, argv);
-  
   auto node = std::make_shared<PickAndPlaceNode>();
-  
-  RCLCPP_INFO(node->get_logger(), "🚀 Pick and Place Node created");
-  
-  // Use multi-threaded executor for better performance
+  // A multi-threaded executor is crucial for nodes that handle complex, parallel tasks like MoveIt.
   rclcpp::executors::MultiThreadedExecutor executor;
   executor.add_node(node);
-  
-  RCLCPP_INFO(node->get_logger(), "🔄 Executor starting...");
   executor.spin();
-  
-  rclcpp::shutdown();
+  // rclcpp::shutdown() is called within the node logic after the demo completes.
   return 0;
 }
