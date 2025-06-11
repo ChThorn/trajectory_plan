@@ -3,13 +3,6 @@
 #include <control_msgs/action/follow_joint_trajectory.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
 
-/**
- * @class PickAndPlaceNode
- * @brief The main node for running the pick and place demonstration.
- *
- * This node is responsible for loading parameters, initializing the TrajectoryPlanner,
- * and triggering the main pick and place sequence.
- */
 class PickAndPlaceNode : public rclcpp::Node
 {
 public:
@@ -17,35 +10,39 @@ public:
   {
     RCLCPP_INFO(get_logger(), "🚀 Pick and Place Node starting...");
     
-    // Load parameters from the config file
     loadConfiguration();
     printConfiguration();
     
-    // A timer ensures that initialization doesn't start until the rest of the ROS 2 system
-    // (e.g., robot_state_publisher, MoveIt servers) has had time to launch.
+    // --- [NEW] GRACEFUL SHUTDOWN HANDLER ---
+    // Register a callback that will be triggered when the node is shutting down (e.g., via Ctrl+C).
+    // This ensures that any ongoing robot motion is cancelled.
+    auto on_shutdown_callback = [this]() {
+        RCLCPP_INFO(get_logger(), "🔌 Shutdown signal received. Stopping robot motion...");
+        if (trajectory_planner_) {
+            trajectory_planner_->stop();
+        }
+    };
+    rclcpp::on_shutdown(on_shutdown_callback);
+
     timer_ = create_wall_timer(
       std::chrono::seconds(5),
       std::bind(&PickAndPlaceNode::main_task, this));
   }
 
 private:
-  /**
-   * @brief Loads all necessary parameters from the ROS parameter server.
-   */
   void loadConfiguration()
   {
-    // Declare and read parameters with default values
     this->declare_parameter<double>("table.length", 0.98);
     this->declare_parameter<double>("table.width", 0.49);
     this->declare_parameter<double>("table.height", 0.04);
-    this->declare_parameter<double>("table.x_offset", 0.0);
+    this->declare_parameter<double>("table.x_offset", 0.45);
     this->declare_parameter<double>("table.y_offset", 0.0);
-    this->declare_parameter<double>("table.z_position", -0.027);
+    this->declare_parameter<double>("table.z_position", -0.024);
 
-    this->declare_parameter<double>("workspace.width", 1.4);
-    this->declare_parameter<double>("workspace.depth", 1.2);
+    this->declare_parameter<double>("workspace.width", 1.0);
+    this->declare_parameter<double>("workspace.depth", 1.0);
     this->declare_parameter<double>("workspace.height", 1.0);
-    this->declare_parameter<double>("workspace.x_position", 0.4);
+    this->declare_parameter<double>("workspace.x_position", 0.25);
     this->declare_parameter<double>("workspace.y_position", 0.0);
     this->declare_parameter<double>("workspace.z_position", 0.5);
     this->declare_parameter<bool>("workspace.visualization_enabled", true);
@@ -70,7 +67,6 @@ private:
     
     this->declare_parameter<double>("demo.clearance_height_mm", 50.0);
     
-    // Read parameters into the config structs
     config_.table.length = this->get_parameter("table.length").as_double();
     config_.table.width = this->get_parameter("table.width").as_double();
     config_.table.height = this->get_parameter("table.height").as_double();
@@ -107,15 +103,12 @@ private:
     demo_config_.smooth_motion = this->get_parameter("robot.smooth_motion").as_bool();
   }
   
-  /**
-   * @brief Prints the loaded configuration to the console.
-   */
   void printConfiguration()
   {
     RCLCPP_INFO(get_logger(), "📋 Configuration loaded:");
-    RCLCPP_INFO(get_logger(), "   Table: %.2f x %.2f x %.2f m at [%.2f, %.2f]", 
+    RCLCPP_INFO(get_logger(), "   Table: %.2f x %.2f x %.2f m at [%.2f, %.2f, %.2f]", 
                 config_.table.length, config_.table.width, config_.table.height,
-                config_.table.x_offset, config_.table.y_offset);
+                config_.table.x_offset, config_.table.y_offset, config_.table.z_position);
     RCLCPP_INFO(get_logger(), "   Workspace: %.2f x %.2f x %.2f m at [%.2f, %.2f, %.2f]", 
                 config_.workspace.width, config_.workspace.depth, config_.workspace.height,
                 config_.workspace.x_position, config_.workspace.y_position, config_.workspace.z_position);
@@ -130,13 +123,11 @@ private:
     RCLCPP_INFO(get_logger(), "         clearance=%.1f mm", demo_config_.clearance_height_mm);
   }
   
-  /**
-   * @brief The main task triggered by the timer to initialize and run the demo.
-   */
   void main_task()
   {
-    timer_->cancel(); // Ensure this task runs only once
+    timer_->cancel();
     
+    if (!rclcpp::ok()) return;
     RCLCPP_INFO(get_logger(), "🔌 Checking for controller action server...");
     using FollowJointTrajectory = control_msgs::action::FollowJointTrajectory;
     auto action_client = rclcpp_action::create_client<FollowJointTrajectory>(
@@ -144,33 +135,26 @@ private:
       
     if (!action_client->wait_for_action_server(std::chrono::seconds(10))) {
       RCLCPP_ERROR(get_logger(), "❌ Controller action server not available after 10s. Shutting down.");
-      rclcpp::shutdown();
+      if (rclcpp::ok()) rclcpp::shutdown();
       return;
     }
     RCLCPP_INFO(get_logger(), "✅ Controller is ready.");
     
-    // 1. Create the planner instance
     trajectory_planner_ = std::make_unique<trajectory_plan::TrajectoryPlanner>(shared_from_this());
-    
-    // 2. Pass the loaded configuration to the planner
     trajectory_planner_->updateConfiguration(config_);
 
-    // 3. The initialize() method handles all setup sequentially (MoveIt, collision scene, constraints).
     if (!trajectory_planner_->initialize()) {
         RCLCPP_ERROR(get_logger(), "❌ Failed to initialize TrajectoryPlanner. Shutting down.");
-        rclcpp::shutdown();
+        if (rclcpp::ok()) rclcpp::shutdown();
         return;
     }
     
-    // 4. Now that initialization is complete, it's safe to execute the demo.
     executeDemo();
   }
   
-  /**
-   * @brief Executes the main pick and place demonstration sequence.
-   */
   void executeDemo()
   {
+    if (!rclcpp::ok()) return;
     RCLCPP_INFO(get_logger(), "🚀 Starting production-safe pick and place demo...");
     
     if (demo_config_.smooth_motion) {
@@ -185,17 +169,20 @@ private:
       demo_config_.clearance_height_mm
     );
     
+    if (!rclcpp::ok()) {
+        RCLCPP_WARN(get_logger(), "Execution was cancelled by shutdown request.");
+        return;
+    }
+
     if (success) {
       RCLCPP_INFO(get_logger(), "🎉 Demo completed successfully!");
     } else {
       RCLCPP_ERROR(get_logger(), "❌ Demo failed.");
     }
     
-    // Shutdown the node after the demo is complete
-    rclcpp::shutdown();
+    if (rclcpp::ok()) rclcpp::shutdown();
   }
   
-  // --- Configuration Structs ---
   trajectory_plan::PlannerConfiguration config_;
   struct DemoConfiguration {
     double pick_x_mm, pick_y_mm, pick_z_mm;
@@ -206,7 +193,6 @@ private:
     bool smooth_motion;
   } demo_config_;
   
-  // --- Components ---
   std::unique_ptr<trajectory_plan::TrajectoryPlanner> trajectory_planner_;
   rclcpp::TimerBase::SharedPtr timer_;
 };
@@ -215,10 +201,8 @@ int main(int argc, char** argv)
 {
   rclcpp::init(argc, argv);
   auto node = std::make_shared<PickAndPlaceNode>();
-  // A multi-threaded executor is crucial for nodes that handle complex, parallel tasks like MoveIt.
   rclcpp::executors::MultiThreadedExecutor executor;
   executor.add_node(node);
   executor.spin();
-  // rclcpp::shutdown() is called within the node logic after the demo completes.
   return 0;
 }

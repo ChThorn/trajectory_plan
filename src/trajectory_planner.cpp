@@ -6,12 +6,12 @@
 namespace trajectory_plan
 {
 
-TrajectoryPlanner::TrajectoryPlanner(const rclcpp::Node::SharedPtr& node)
-  : node_(node), initialized_(false)
-{
-  RCLCPP_INFO(node_->get_logger(), "🚀 TrajectoryPlanner created. Call initialize() to setup.");
-  config_ = PlannerConfiguration{};
-}
+    TrajectoryPlanner::TrajectoryPlanner(const rclcpp::Node::SharedPtr& node)
+    : node_(node), initialized_(false)
+  {
+    RCLCPP_INFO(node_->get_logger(), "🚀 TrajectoryPlanner created. Call initialize() to setup.");
+    config_ = PlannerConfiguration{};
+  }
 
 bool TrajectoryPlanner::initialize()
 {
@@ -22,7 +22,6 @@ bool TrajectoryPlanner::initialize()
   
   RCLCPP_INFO(node_->get_logger(), "🔧 Starting SYNCHRONOUS TrajectoryPlanner initialization...");
 
-  // 1. Initialize MoveIt Interfaces
   try {
     move_group_ = std::make_shared<moveit::planning_interface::MoveGroupInterface>(node_, "mainpulation");
     planning_scene_interface_ = std::make_shared<moveit::planning_interface::PlanningSceneInterface>();
@@ -32,7 +31,6 @@ bool TrajectoryPlanner::initialize()
     return false;
   }
 
-  // 2. Initialize RobotOperation
   try {
     robot_operation_ = std::make_unique<RobotOperation>(node_, move_group_);
     robot_operation_->setVelocityScaling(config_.robot.velocity_scaling);
@@ -43,21 +41,18 @@ bool TrajectoryPlanner::initialize()
     return false;
   }
 
-  // 3. Setup Collision Scene
   if (!setupCollisionScene()) {
       RCLCPP_ERROR(node_->get_logger(), "❌ [3/4] Failed to setup collision scene.");
       return false;
   }
   RCLCPP_INFO(node_->get_logger(), "✅ [3/4] Collision scene configured.");
 
-  // 4. Add Workspace Constraints
   if (!addWorkspaceConstraints()) {
       RCLCPP_ERROR(node_->get_logger(), "❌ [4/4] Failed to add workspace constraints.");
       return false;
   }
   RCLCPP_INFO(node_->get_logger(), "✅ [4/4] Workspace constraints applied.");
   
-  // Optional: Initialize Visualization
   if (config_.workspace.visualization_enabled) {
       enableWorkspaceVisualization(true);
   }
@@ -67,6 +62,17 @@ bool TrajectoryPlanner::initialize()
   return true;
 }
 
+// --- [NEW] SHUTDOWN HANDLING IMPLEMENTATION ---
+void TrajectoryPlanner::stop()
+{
+  if (!initialized_ || !move_group_) {
+    RCLCPP_WARN(node_->get_logger(), "Cannot stop, planner not initialized.");
+    return;
+  }
+  RCLCPP_INFO(node_->get_logger(), "🛑 Sending stop signal to MoveGroup to cancel all actions.");
+  move_group_->stop(); // This is the crucial call to MoveIt
+}
+
 void TrajectoryPlanner::updateConfiguration(const PlannerConfiguration& config)
 {
   config_ = config;
@@ -74,7 +80,6 @@ void TrajectoryPlanner::updateConfiguration(const PlannerConfiguration& config)
     robot_operation_->setVelocityScaling(config_.robot.velocity_scaling);
     robot_operation_->setAccelerationScaling(config_.robot.acceleration_scaling);
   }
-  // Re-apply scene and constraints if already initialized
   if(initialized_) {
       setupCollisionScene();
       addWorkspaceConstraints();
@@ -83,40 +88,36 @@ void TrajectoryPlanner::updateConfiguration(const PlannerConfiguration& config)
 }
 
 bool TrajectoryPlanner::executeProfessionalPickAndPlace(
-  double pick_x_mm, double pick_y_mm, double pick_z_mm,
-  double pick_roll_deg, double pick_pitch_deg, double pick_yaw_deg,
-  double place_x_mm, double place_y_mm, double place_z_mm,
-  double place_roll_deg, double place_pitch_deg, double place_yaw_deg,
-  double clearance_height_mm)
-{
-  if (!initialized_) {
-    RCLCPP_ERROR(node_->get_logger(), "❌ TrajectoryPlanner not initialized.");
-    return false;
-  }
-  
-  // Pre-flight check: Validate poses against workspace before attempting to move
-  auto pick_pose_for_validation = robot_operation_->createPoseFromMmAndDegrees(pick_x_mm, pick_y_mm, pick_z_mm, 0,0,0);
-  auto place_pose_for_validation = robot_operation_->createPoseFromMmAndDegrees(place_x_mm, place_y_mm, place_z_mm, 0,0,0);
-  if (!validatePoseInWorkspace(pick_pose_for_validation) || !validatePoseInWorkspace(place_pose_for_validation)) {
-      RCLCPP_ERROR(node_->get_logger(), "❌ Aborting: One or more poses are outside the workspace.");
+    double pick_x_mm, double pick_y_mm, double pick_z_mm,
+    double pick_roll_deg, double pick_pitch_deg, double pick_yaw_deg,
+    double place_x_mm, double place_y_mm, double place_z_mm,
+    double place_roll_deg, double place_pitch_deg, double place_yaw_deg,
+    double clearance_height_mm)
+  {
+    if (!initialized_) {
+      RCLCPP_ERROR(node_->get_logger(), "❌ TrajectoryPlanner not initialized.");
       return false;
+    }
+    
+    auto pick_pose_for_validation = robot_operation_->createPoseFromMmAndDegrees(pick_x_mm, pick_y_mm, pick_z_mm, 0,0,0);
+    auto place_pose_for_validation = robot_operation_->createPoseFromMmAndDegrees(place_x_mm, place_y_mm, place_z_mm, 0,0,0);
+    if (!validatePoseInWorkspace(pick_pose_for_validation) || !validatePoseInWorkspace(place_pose_for_validation)) {
+        RCLCPP_ERROR(node_->get_logger(), "❌ Aborting: One or more poses are outside the workspace.");
+        return false;
+    }
+  
+    return robot_operation_->executeProfessionalPickAndPlace(
+      pick_x_mm, pick_y_mm, pick_z_mm, pick_roll_deg, pick_pitch_deg, pick_yaw_deg,
+      place_x_mm, place_y_mm, place_z_mm, place_roll_deg, place_pitch_deg, place_yaw_deg,
+      clearance_height_mm
+    );
   }
 
-  // Delegate the entire sequence to RobotOperation
-  return robot_operation_->executeProfessionalPickAndPlace(
-    pick_x_mm, pick_y_mm, pick_z_mm, pick_roll_deg, pick_pitch_deg, pick_yaw_deg,
-    place_x_mm, place_y_mm, place_z_mm, place_roll_deg, place_pitch_deg, place_yaw_deg,
-    clearance_height_mm
-  );
-}
-
-// --- Delegated Methods ---
 bool TrajectoryPlanner::moveToHome() { return robot_operation_ ? robot_operation_->moveToHome() : false; }
 bool TrajectoryPlanner::moveToSafePosition() { return robot_operation_ ? robot_operation_->moveToSafePosition() : false; }
 void TrajectoryPlanner::setSmoothMotion(bool enable) { if (robot_operation_) robot_operation_->setSmoothMotion(enable); }
 void TrajectoryPlanner::printCurrentPose() { if (robot_operation_) robot_operation_->checkAndPrintCurrentPose(); }
 
-// --- Scene Management ---
 bool TrajectoryPlanner::setupCollisionScene()
 {
   RCLCPP_INFO(node_->get_logger(), "🛡️ Setting up table as collision object...");
@@ -139,43 +140,49 @@ bool TrajectoryPlanner::setupCollisionScene()
   table_object.primitive_poses.push_back(table_pose);
   table_object.operation = table_object.ADD;
   
-  // [CRITICAL IMPROVEMENT] Use applyCollisionObjects for a synchronous update.
-  // This blocks until the planning scene has processed the new object.
   return planning_scene_interface_->applyCollisionObjects({table_object});
 }
 
 bool TrajectoryPlanner::addWorkspaceConstraints()
 {
-    RCLCPP_INFO(node_->get_logger(), "📐 Applying workspace constraints...");
+    RCLCPP_INFO(node_->get_logger(), "📐 Applying workspace constraints to ALL robot links...");
     
-    moveit_msgs::msg::PositionConstraint pcm;
-    pcm.header.frame_id = move_group_->getPlanningFrame();
-    pcm.link_name = move_group_->getEndEffectorLink(); // Constrain the tool tip
-    
-    shape_msgs::msg::SolidPrimitive box;
-    box.type = shape_msgs::msg::SolidPrimitive::BOX;
-    box.dimensions = {config_.workspace.width, config_.workspace.depth, config_.workspace.height};
-    
-    geometry_msgs::msg::Pose box_pose;
-    box_pose.position.x = config_.workspace.x_position;
-    box_pose.position.y = config_.workspace.y_position;
-    box_pose.position.z = config_.workspace.z_position;
-    box_pose.orientation.w = 1.0;
-
-    pcm.constraint_region.primitives.push_back(box);
-    pcm.constraint_region.primitive_poses.push_back(box_pose);
-    pcm.weight = 1.0; // This is a hard constraint
-
     moveit_msgs::msg::Constraints path_constraints;
-    path_constraints.position_constraints.push_back(pcm);
+    const auto& link_names = move_group_->getRobotModel()->getJointModelGroup(move_group_->getName())->getLinkModelNames();
+
+    for (const auto& link_name : link_names) {
+        if (link_name == "world") {
+            continue;
+        }
+
+        moveit_msgs::msg::PositionConstraint pcm;
+        pcm.header.frame_id = move_group_->getPlanningFrame();
+        pcm.link_name = link_name;
+        
+        shape_msgs::msg::SolidPrimitive box;
+        box.type = shape_msgs::msg::SolidPrimitive::BOX;
+        box.dimensions = {config_.workspace.width, config_.workspace.depth, config_.workspace.height};
+        
+        geometry_msgs::msg::Pose box_pose;
+        box_pose.position.x = config_.workspace.x_position;
+        box_pose.position.y = config_.workspace.y_position;
+        box_pose.position.z = config_.workspace.z_position;
+        box_pose.orientation.w = 1.0;
+
+        pcm.constraint_region.primitives.push_back(box);
+        pcm.constraint_region.primitive_poses.push_back(box_pose);
+        pcm.weight = 1.0;
+
+        path_constraints.position_constraints.push_back(pcm);
+    }
     
     move_group_->setPathConstraints(path_constraints);
     
+    RCLCPP_INFO(node_->get_logger(), "   Applied constraints to %ld links.", link_names.size());
     printWorkspaceLimits();
     return true;
 }
 
-// --- Validation and Visualization ---
 bool TrajectoryPlanner::validatePoseInWorkspace(const geometry_msgs::msg::Pose& pose)
 {
   double x_min = config_.workspace.x_position - config_.workspace.width / 2.0;
@@ -203,11 +210,12 @@ void TrajectoryPlanner::enableWorkspaceVisualization(bool enable)
 {
   if (enable && !marker_publisher_) {
     marker_publisher_ = node_->create_publisher<visualization_msgs::msg::MarkerArray>("workspace_boundary", 10);
-    visualization_timer_ = node_->create_wall_timer(std::chrono::seconds(2), [this](){ this->publishWorkspaceBoundary(); });
+    publishWorkspaceBoundary();
+    visualization_timer_ = node_->create_wall_timer(std::chrono::seconds(5), [this](){ this->publishWorkspaceBoundary(); });
     RCLCPP_INFO(node_->get_logger(), "🔳 Workspace visualization ENABLED.");
   } else if (!enable && marker_publisher_) {
     if(visualization_timer_) visualization_timer_->cancel();
-    marker_publisher_.reset(); // Release the publisher
+    marker_publisher_.reset();
     RCLCPP_INFO(node_->get_logger(), "🔲 Workspace visualization DISABLED.");
   }
 }
@@ -225,6 +233,8 @@ void TrajectoryPlanner::publishWorkspaceBoundary()
     box_marker.type = visualization_msgs::msg::Marker::CUBE;
     box_marker.action = visualization_msgs::msg::Marker::ADD;
 
+    box_marker.lifetime = rclcpp::Duration(0, 0);
+
     box_marker.pose.position.x = config_.workspace.x_position;
     box_marker.pose.position.y = config_.workspace.y_position;
     box_marker.pose.position.z = config_.workspace.z_position;
@@ -234,10 +244,10 @@ void TrajectoryPlanner::publishWorkspaceBoundary()
     box_marker.scale.y = config_.workspace.depth;
     box_marker.scale.z = config_.workspace.height;
 
-    box_marker.color.r = 1.0f; // Red
+    box_marker.color.r = 1.0f;
     box_marker.color.g = 0.0f;
     box_marker.color.b = 0.0f;
-    box_marker.color.a = 0.2f; // Semi-transparent
+    box_marker.color.a = 0.25f;
 
     marker_array.markers.push_back(box_marker);
     marker_publisher_->publish(marker_array);
