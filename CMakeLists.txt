@@ -1,11 +1,12 @@
 cmake_minimum_required(VERSION 3.10)
 project(trajectory_plan)
 
+# Set C++ standard
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
-# find dependencies
+# Find dependencies
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(moveit_core REQUIRED)
@@ -18,7 +19,7 @@ find_package(control_msgs REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(visualization_msgs REQUIRED)
 
-# Add include directories
+# Include directories
 include_directories(
   include
   ${moveit_core_INCLUDE_DIRS}
@@ -26,12 +27,10 @@ include_directories(
   ${moveit_ros_planning_interface_INCLUDE_DIRS}
 )
 
-# Create the trajectory planner library
+# Create trajectory planner library (simplified structure)
 add_library(${PROJECT_NAME} 
-  src/workspace_config.cpp
-  src/table_config.cpp
-  src/robot_operation.cpp
   src/trajectory_planner.cpp
+  src/robot_operation.cpp
 )
 
 target_include_directories(${PROJECT_NAME} PUBLIC
@@ -39,6 +38,7 @@ target_include_directories(${PROJECT_NAME} PUBLIC
   $<INSTALL_INTERFACE:include>
 )
 
+# Link dependencies to library
 ament_target_dependencies(${PROJECT_NAME}
   rclcpp
   moveit_core
@@ -50,17 +50,20 @@ ament_target_dependencies(${PROJECT_NAME}
   visualization_msgs
 )
 
-# Create the pick and place node executable
+# Create executable
 add_executable(pick_and_place_node src/pick_and_place_node.cpp)
+
 target_link_libraries(pick_and_place_node ${PROJECT_NAME})
+
 ament_target_dependencies(pick_and_place_node
   rclcpp
   geometry_msgs
   control_msgs
   rclcpp_action
+  tf2
 )
 
-# Install targets
+# Install library
 install(TARGETS ${PROJECT_NAME}
   EXPORT export_${PROJECT_NAME}
   LIBRARY DESTINATION lib
@@ -69,6 +72,7 @@ install(TARGETS ${PROJECT_NAME}
   INCLUDES DESTINATION include
 )
 
+# Install executable
 install(TARGETS pick_and_place_node
   DESTINATION lib/${PROJECT_NAME}
 )
@@ -79,7 +83,14 @@ install(
   DESTINATION include
 )
 
-# Export package dependencies
+# Install config files (if any)
+install(
+  DIRECTORY config/
+  DESTINATION share/${PROJECT_NAME}/config
+  OPTIONAL
+)
+
+# Export package information
 ament_export_include_directories(include)
 ament_export_libraries(${PROJECT_NAME})
 ament_export_targets(export_${PROJECT_NAME})
@@ -91,6 +102,7 @@ ament_export_dependencies(
   tf2_eigen
   tf2
   geometry_msgs
+  visualization_msgs
 )
 
 ament_package()

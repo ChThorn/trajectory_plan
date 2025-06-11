@@ -3,77 +3,98 @@
 
 #include <rclcpp/rclcpp.hpp>
 #include <moveit/move_group_interface/move_group_interface.h>
-#include <moveit/planning_scene_interface/planning_scene_interface.h>
-#include <moveit_msgs/msg/display_robot_state.hpp>
-#include <moveit_msgs/msg/display_trajectory.hpp>
 #include <geometry_msgs/msg/pose.hpp>
-#include <tf2_eigen/tf2_eigen.hpp>
+#include <moveit_msgs/msg/robot_trajectory.hpp>
+#include <vector>
 
 namespace trajectory_plan
 {
+
 class RobotOperation
 {
 public:
   RobotOperation(const rclcpp::Node::SharedPtr& node,
                 const std::shared_ptr<moveit::planning_interface::MoveGroupInterface>& move_group);
   
-  // Basic motion planning and execution
-  bool planToPose(const geometry_msgs::msg::Pose& target_pose);
-  bool planToJointPosition(const std::vector<double>& joint_values);
-  bool executePlan();
-  
-  // Pre-defined positions
-  bool moveToHome();
-  bool moveToSafePosition();
-  
-  // Motion control parameters
+  // Configuration methods
   void setVelocityScaling(double scaling);
   void setAccelerationScaling(double scaling);
   void setSmoothMotion(bool enable = true);
+  void setHomePosition(const std::vector<double>& joints);
+  void setSafePosition(const std::vector<double>& joints);
   
-  // Utility functions
-  void printCurrentPose();
-  void waitForMotionComplete(double seconds = 1.0);
+  // Planning methods
+  bool planToPose(const geometry_msgs::msg::Pose& target_pose);
+  bool planToJointPosition(const std::vector<double>& joint_values);
   
-  // Pick and place operations
-  bool planPickAndPlace(
-    const geometry_msgs::msg::Pose& pick_pose,
-    const geometry_msgs::msg::Pose& place_pose,
-    double approach_distance = 0.1,
-    double retreat_distance = 0.1
+  // Execution methods
+  bool executePlan();
+  
+  // High-level operations
+  bool moveToHome();
+  bool moveToSafePosition();
+  
+  // Professional pick-and-place with mm/degrees input
+  bool executeProfessionalPickAndPlace(
+    double pick_x_mm, double pick_y_mm, double pick_z_mm,
+    double pick_roll_deg, double pick_pitch_deg, double pick_yaw_deg,
+    double place_x_mm, double place_y_mm, double place_z_mm,
+    double place_roll_deg, double place_pitch_deg, double place_yaw_deg,
+    double clearance_height_mm = 50.0  // 5cm default clearance
   );
   
-  bool planMountedTablePickAndPlace(
+  // Legacy pick-and-place (for backward compatibility)
+  bool planPickAndPlace(
     const geometry_msgs::msg::Pose& pick_pose,
     const geometry_msgs::msg::Pose& place_pose,
     double approach_distance = 0.08,
     double retreat_distance = 0.08
   );
   
-  // Helper functions for pick and place (PUBLIC for delegation)
-  geometry_msgs::msg::Pose createApproachPose(const geometry_msgs::msg::Pose& target_pose, double distance);
-  geometry_msgs::msg::Pose createRetreatPose(const geometry_msgs::msg::Pose& target_pose, double distance);
+  // Gripper control
+  void openGripper();
+  void closeGripper();
   
-  // Get current plan
-  const moveit::planning_interface::MoveGroupInterface::Plan& getCurrentPlan() const {
-    return current_plan_;
-  }
+  // Utility methods
+  void checkAndPrintCurrentPose();
+  void waitForMotionComplete(double seconds = 1.0);
+  geometry_msgs::msg::Pose getCurrentPose();
+  
+  // Conversion utilities
+  geometry_msgs::msg::Pose createPoseFromMmAndDegrees(
+    double x_mm, double y_mm, double z_mm,
+    double roll_deg, double pitch_deg, double yaw_deg
+  );
+  
+  // State inquiry
+  bool isReady() const { return initialized_; }
 
 private:
+  // Core components
   rclcpp::Node::SharedPtr node_;
   std::shared_ptr<moveit::planning_interface::MoveGroupInterface> move_group_;
   
-  // Current plan storage
-  moveit::planning_interface::MoveGroupInterface::Plan current_plan_;
-  
-  // Pre-defined poses
+  // Configuration
+  double velocity_scaling_factor_;
+  double acceleration_scaling_factor_;
   std::vector<double> home_joint_values_;
   std::vector<double> safe_joint_values_;
   
-  // Planning parameters
-  double velocity_scaling_factor_;
-  double acceleration_scaling_factor_;
+  // State
+  bool initialized_;
+  moveit::planning_interface::MoveGroupInterface::Plan current_plan_;
+  
+  // Private utility methods
+  geometry_msgs::msg::Pose createApproachPose(const geometry_msgs::msg::Pose& target_pose, double distance);
+  geometry_msgs::msg::Pose createRetreatPose(const geometry_msgs::msg::Pose& target_pose, double distance);
+  bool executePickAndPlaceSequence(
+    const geometry_msgs::msg::Pose& pick_pose,
+    const geometry_msgs::msg::Pose& place_pose,
+    double approach_distance,
+    double retreat_distance
+  );
 };
-}
+
+} // namespace trajectory_plan
 
 #endif // ROBOT_OPERATION_HPP
