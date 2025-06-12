@@ -354,11 +354,19 @@ bool RobotOperation::executeRecoverySequence(const std::string& failure_context)
     
     last_metrics_.recovery_attempts++;
     
-    // Enhanced recovery with timeout and better error handling
     auto recovery_start = std::chrono::steady_clock::now();
-    const auto timeout = std::chrono::seconds(static_cast<int>(safety_config_.safety_stop_timeout));
+    const auto timeout = std::chrono::seconds(static_cast<int>(safety_config_.safety_stop_timeout * 3)); // 3x normal timeout
     
     try {
+        // Helper lambda to check timeout
+        auto check_timeout = [&]() -> bool {
+            if (std::chrono::steady_clock::now() - recovery_start > timeout) {
+                RCLCPP_ERROR(node_->get_logger(), "⏰ Recovery timeout reached");
+                return true;
+            }
+            return false;
+        };
+        
         // Level 0: Try home position first
         RCLCPP_INFO(node_->get_logger(), "🏠 Recovery Level 0: Attempting home position...");
         if (attemptSafeMove(safety_config_.home_joints, "home")) {
@@ -366,11 +374,7 @@ bool RobotOperation::executeRecoverySequence(const std::string& failure_context)
             return true;
         }
         
-        // Check timeout
-        if (std::chrono::steady_clock::now() - recovery_start > timeout) {
-            RCLCPP_ERROR(node_->get_logger(), "⏰ Recovery timeout reached");
-            return false;
-        }
+        if (check_timeout()) return false;
         
         // Level 1: Try safe position
         RCLCPP_INFO(node_->get_logger(), "🛡️ Recovery Level 1: Attempting safe position...");
@@ -378,6 +382,8 @@ bool RobotOperation::executeRecoverySequence(const std::string& failure_context)
             RCLCPP_INFO(node_->get_logger(), "✅ Recovery successful - reached safe position");
             return true;
         }
+        
+        if (check_timeout()) return false;
         
         // Level 2: Try emergency safe position
         RCLCPP_INFO(node_->get_logger(), "🚨 Recovery Level 2: Attempting emergency safe position...");
@@ -396,7 +402,8 @@ bool RobotOperation::executeRecoverySequence(const std::string& failure_context)
             RCLCPP_WARN(node_->get_logger(), "🔌 Recovery interrupted by shutdown request");
             return false;
         }
-        throw; // Re-throw other errors
+        RCLCPP_ERROR(node_->get_logger(), "❌ Exception during recovery: %s", e.what());
+        return false;
     }
 }
 
@@ -462,6 +469,142 @@ bool RobotOperation::planAndExecuteCartesianPath(const std::vector<geometry_msgs
     return success;
 }
 
+// bool RobotOperation::executeProfessionalPickAndPlace(
+//     double pick_x_mm, double pick_y_mm, double pick_z_mm,
+//     double pick_roll_deg, double pick_pitch_deg, double pick_yaw_deg,
+//     double place_x_mm, double place_y_mm, double place_z_mm,
+//     double place_roll_deg, double place_pitch_deg, double place_yaw_deg,
+//     double clearance_height_mm)
+// {
+//     checkEmergencyStop();
+//     startMetrics();
+    
+//     RCLCPP_INFO(node_->get_logger(), "🏭 PRODUCTION Pick and Place Sequence Starting...");
+
+//     // FIXED: Move safe_recovery lambda outside try block to fix scope issue
+//     auto safe_recovery = [this](const std::string& context) -> bool {
+//         try {
+//             return this->executeRecoverySequence(context);
+//         } catch (const RobotOperationError& e) {
+//             if (e.getType() == RobotOperationError::Type::SHUTDOWN_REQUESTED) {
+//                 RCLCPP_WARN(node_->get_logger(), "🔌 Pick and place interrupted by shutdown");
+//                 return false;
+//             }
+//             RCLCPP_ERROR(node_->get_logger(), "❌ Recovery failed: %s", e.what());
+//             return false;
+//         }
+//     };
+
+//     try {
+//         // Create all poses upfront for validation
+//         auto pick_pose = createPoseFromMmAndDegrees(pick_x_mm, pick_y_mm, pick_z_mm, 
+//                                                    pick_roll_deg, pick_pitch_deg, pick_yaw_deg);
+//         auto place_pose = createPoseFromMmAndDegrees(place_x_mm, place_y_mm, place_z_mm, 
+//                                                     place_roll_deg, place_pitch_deg, place_yaw_deg);
+//         double clearance_m = clearance_height_mm / 1000.0;
+
+//         auto pick_approach_pose = pick_pose;
+//         pick_approach_pose.position.z += clearance_m;
+
+//         auto place_approach_pose = place_pose;
+//         place_approach_pose.position.z += clearance_m;
+        
+//         // Execute sequence with enhanced error checking
+//         checkEmergencyStop();
+//         if (!moveToHome()) {
+//             RCLCPP_ERROR(node_->get_logger(), "❌ Failed to move to home at start");
+//             return safe_recovery("Failed to reach home at startup");
+//         }
+        
+//         // PICK SEQUENCE
+//         checkEmergencyStop();
+//         RCLCPP_INFO(node_->get_logger(), "🎯 Starting PICK sequence...");
+//         if (!planToPose(pick_approach_pose) || !executePlan()) {
+//             RCLCPP_ERROR(node_->get_logger(), "❌ Failed to reach pick approach pose");
+//             return safe_recovery("Failed to reach pick approach pose");
+//         }
+        
+//         checkEmergencyStop();
+//         openGripper();
+        
+//         checkEmergencyStop();
+//         RCLCPP_INFO(node_->get_logger(), "⬇️ Moving linearly to PICK pose...");
+//         if (!planAndExecuteCartesianPath({pick_pose})) {
+//             RCLCPP_ERROR(node_->get_logger(), "❌ Failed to reach pick pose");
+//             return safe_recovery("Failed to reach pick pose");
+//         }
+        
+//         checkEmergencyStop();
+//         closeGripper();
+        
+//         checkEmergencyStop();
+//         RCLCPP_INFO(node_->get_logger(), "⬆️ Retreating linearly from PICK pose...");
+//         if (!planAndExecuteCartesianPath({pick_approach_pose})) {
+//             RCLCPP_ERROR(node_->get_logger(), "❌ Failed to retreat from pick pose");
+//             openGripper(); // Release object before recovery
+//             return safe_recovery("Failed to retreat from pick with object");
+//         }
+        
+//         // Return to home as intermediate safe position
+//         checkEmergencyStop();
+//         RCLCPP_INFO(node_->get_logger(), "🏠 Returning to Home as intermediate position...");
+//         if (!moveToHome()) {
+//             RCLCPP_ERROR(node_->get_logger(), "❌ Failed to return to home after pick");
+//             return safe_recovery("Failed to return home after pick");
+//         }
+        
+//         // PLACE SEQUENCE
+//         checkEmergencyStop();
+//         RCLCPP_INFO(node_->get_logger(), "📦 Starting PLACE sequence...");
+//         if (!planToPose(place_approach_pose) || !executePlan()) {
+//             RCLCPP_ERROR(node_->get_logger(), "❌ Failed to reach place approach pose");
+//             return safe_recovery("Failed to reach place approach pose");
+//         }
+        
+//         checkEmergencyStop();
+//         RCLCPP_INFO(node_->get_logger(), "⬇️ Moving linearly to PLACE pose...");
+//         if (!planAndExecuteCartesianPath({place_pose})) {
+//             RCLCPP_ERROR(node_->get_logger(), "❌ Failed to reach place pose");
+//             return safe_recovery("Failed to reach place pose");
+//         }
+        
+//         checkEmergencyStop();
+//         openGripper();
+        
+//         checkEmergencyStop();
+//         RCLCPP_INFO(node_->get_logger(), "⬆️ Retreating linearly from PLACE pose...");
+//         if (!planAndExecuteCartesianPath({place_approach_pose})) {
+//             RCLCPP_ERROR(node_->get_logger(), "❌ Failed to retreat from place pose");
+//             return safe_recovery("Failed to retreat from place pose");
+//         }
+        
+//         // Final return to home
+//         checkEmergencyStop();
+//         if (!moveToHome()) {
+//             RCLCPP_WARN(node_->get_logger(), "⚠️ Failed final return to home, but operation completed");
+//         }
+        
+//         last_metrics_.success = true;
+//         RCLCPP_INFO(node_->get_logger(), "🎉 PRODUCTION Pick and Place completed successfully!");
+//         return true;
+        
+//     } catch (const RobotOperationError& e) {
+//         if (e.getType() == RobotOperationError::Type::SHUTDOWN_REQUESTED) {
+//             RCLCPP_WARN(node_->get_logger(), "🔌 Pick and place sequence interrupted by shutdown");
+//             recordFailure("Shutdown requested");
+//             return false;
+//         }
+//         recordFailure(e.what());
+//         RCLCPP_ERROR(node_->get_logger(), "❌ Pick and place failed: %s", e.what());
+//         return safe_recovery(e.what());
+//     } catch (const std::exception& e) {
+//         recordFailure(std::string("Unexpected exception: ") + e.what());
+//         RCLCPP_ERROR(node_->get_logger(), "❌ Unexpected exception: %s", e.what());
+//         return safe_recovery(std::string("Unexpected exception: ") + e.what());
+//     }
+// }
+
+
 bool RobotOperation::executeProfessionalPickAndPlace(
     double pick_x_mm, double pick_y_mm, double pick_z_mm,
     double pick_roll_deg, double pick_pitch_deg, double pick_yaw_deg,
@@ -472,24 +615,10 @@ bool RobotOperation::executeProfessionalPickAndPlace(
     checkEmergencyStop();
     startMetrics();
     
-    RCLCPP_INFO(node_->get_logger(), "🏭 PRODUCTION Pick and Place Sequence Starting...");
-
-    // FIXED: Move safe_recovery lambda outside try block to fix scope issue
-    auto safe_recovery = [this](const std::string& context) -> bool {
-        try {
-            return this->executeRecoverySequence(context);
-        } catch (const RobotOperationError& e) {
-            if (e.getType() == RobotOperationError::Type::SHUTDOWN_REQUESTED) {
-                RCLCPP_WARN(node_->get_logger(), "🔌 Pick and place interrupted by shutdown");
-                return false;
-            }
-            RCLCPP_ERROR(node_->get_logger(), "❌ Recovery failed: %s", e.what());
-            return false;
-        }
-    };
+    RCLCPP_INFO(node_->get_logger(), "🏭 PRODUCTION Pick and Place with OPTIMIZED Retry Logic Starting...");
 
     try {
-        // Create all poses upfront for validation
+        // Create poses
         auto pick_pose = createPoseFromMmAndDegrees(pick_x_mm, pick_y_mm, pick_z_mm, 
                                                    pick_roll_deg, pick_pitch_deg, pick_yaw_deg);
         auto place_pose = createPoseFromMmAndDegrees(place_x_mm, place_y_mm, place_z_mm, 
@@ -502,83 +631,122 @@ bool RobotOperation::executeProfessionalPickAndPlace(
         auto place_approach_pose = place_pose;
         place_approach_pose.position.z += clearance_m;
         
-        // Execute sequence with enhanced error checking
-        checkEmergencyStop();
-        if (!moveToHome()) {
-            RCLCPP_ERROR(node_->get_logger(), "❌ Failed to move to home at start");
-            return safe_recovery("Failed to reach home at startup");
-        }
+        // === ADAPTIVE TIMEOUTS ===
+        auto home_timeout = std::chrono::seconds(static_cast<int>(safety_config_.timeouts.home_position_timeout));
+        auto approach_timeout = std::chrono::seconds(static_cast<int>(safety_config_.timeouts.approach_planning_timeout));
+        auto cartesian_timeout = std::chrono::seconds(static_cast<int>(safety_config_.timeouts.cartesian_planning_timeout));
         
-        // PICK SEQUENCE
+        // === PHASE 1: MOVE TO HOME (optimized timeout) ===
         checkEmergencyStop();
-        RCLCPP_INFO(node_->get_logger(), "🎯 Starting PICK sequence...");
-        if (!planToPose(pick_approach_pose) || !executePlan()) {
-            RCLCPP_ERROR(node_->get_logger(), "❌ Failed to reach pick approach pose");
-            return safe_recovery("Failed to reach pick approach pose");
+        RCLCPP_INFO(node_->get_logger(), "🏠 Phase 1: Moving to home position...");
+        if (!planToJointWithRetry(safety_config_.home_joints, "move_to_home", home_timeout)) {
+            return false;
         }
+        if (!executePlan()) {
+            recordFailure("Failed to execute move to home");
+            return executeRecoverySequence("Failed to move to home");
+        }
+        recordPhaseCompletion("move_to_home");
         
+        // === PHASE 2: PLAN HOME -> PICK APPROACH (optimized timeout) ===
+        checkEmergencyStop();
+        RCLCPP_INFO(node_->get_logger(), "🎯 Phase 2: Planning home → pick approach with retry...");
+        if (!planWithRetry(pick_approach_pose, "home_to_pick_approach", approach_timeout)) {
+            recordFailure("Failed to find path home → pick approach after retrying");
+            return false;
+        }
+        if (!executePlan()) {
+            recordFailure("Failed to execute home → pick approach");
+            return executeRecoverySequence("Failed to execute home → pick approach");
+        }
+        recordPhaseCompletion("home_to_pick_approach");
+        
+        // === PHASE 3: PICK SEQUENCE (optimized Cartesian retry) ===
         checkEmergencyStop();
         openGripper();
         
         checkEmergencyStop();
-        RCLCPP_INFO(node_->get_logger(), "⬇️ Moving linearly to PICK pose...");
-        if (!planAndExecuteCartesianPath({pick_pose})) {
-            RCLCPP_ERROR(node_->get_logger(), "❌ Failed to reach pick pose");
-            return safe_recovery("Failed to reach pick pose");
+        RCLCPP_INFO(node_->get_logger(), "⬇️ Phase 3: Moving linearly to PICK pose with retry...");
+        if (!planAndExecuteCartesianPathWithRetry({pick_pose}, "cartesian_to_pick", cartesian_timeout, 0.9)) {
+            recordFailure("Failed Cartesian path to pick pose after retrying");
+            return executeRecoverySequence("Failed Cartesian path to pick pose after retrying");
         }
         
         checkEmergencyStop();
         closeGripper();
         
         checkEmergencyStop();
-        RCLCPP_INFO(node_->get_logger(), "⬆️ Retreating linearly from PICK pose...");
-        if (!planAndExecuteCartesianPath({pick_approach_pose})) {
-            RCLCPP_ERROR(node_->get_logger(), "❌ Failed to retreat from pick pose");
-            openGripper(); // Release object before recovery
-            return safe_recovery("Failed to retreat from pick with object");
+        RCLCPP_INFO(node_->get_logger(), "⬆️ Phase 4: Retreating linearly from PICK pose with retry...");
+        if (!planAndExecuteCartesianPathWithRetry({pick_approach_pose}, "cartesian_from_pick", cartesian_timeout, 0.9)) {
+            openGripper();
+            recordFailure("Failed to retreat from pick pose after retrying");
+            return executeRecoverySequence("Failed to retreat from pick with object after retrying");
         }
         
-        // Return to home as intermediate safe position
+        // === PHASE 5: RETURN TO HOME ===
         checkEmergencyStop();
-        RCLCPP_INFO(node_->get_logger(), "🏠 Returning to Home as intermediate position...");
-        if (!moveToHome()) {
-            RCLCPP_ERROR(node_->get_logger(), "❌ Failed to return to home after pick");
-            return safe_recovery("Failed to return home after pick");
+        RCLCPP_INFO(node_->get_logger(), "🏠 Phase 5: Returning to home as intermediate position...");
+        if (!planToJointWithRetry(safety_config_.home_joints, "return_to_home_after_pick", home_timeout)) {
+            recordFailure("Failed to plan return to home after pick");
+            return executeRecoverySequence("Failed to return home after pick");
         }
-        
-        // PLACE SEQUENCE
-        checkEmergencyStop();
-        RCLCPP_INFO(node_->get_logger(), "📦 Starting PLACE sequence...");
-        if (!planToPose(place_approach_pose) || !executePlan()) {
-            RCLCPP_ERROR(node_->get_logger(), "❌ Failed to reach place approach pose");
-            return safe_recovery("Failed to reach place approach pose");
+        if (!executePlan()) {
+            recordFailure("Failed to execute return to home after pick");
+            return executeRecoverySequence("Failed to return home after pick");
         }
+        recordPhaseCompletion("return_to_home_after_pick");
         
+        // === PHASE 6: PLAN HOME -> PLACE APPROACH ===
         checkEmergencyStop();
-        RCLCPP_INFO(node_->get_logger(), "⬇️ Moving linearly to PLACE pose...");
-        if (!planAndExecuteCartesianPath({place_pose})) {
-            RCLCPP_ERROR(node_->get_logger(), "❌ Failed to reach place pose");
-            return safe_recovery("Failed to reach place pose");
+        RCLCPP_INFO(node_->get_logger(), "📦 Phase 6: Planning home → place approach with retry...");
+        if (!planWithRetry(place_approach_pose, "home_to_place_approach", approach_timeout)) {
+            recordFailure("Failed to find path home → place approach after retrying");
+            return false;
+        }
+        if (!executePlan()) {
+            recordFailure("Failed to execute home → place approach");
+            return executeRecoverySequence("Failed to execute home → place approach");
+        }
+        recordPhaseCompletion("home_to_place_approach");
+        
+        // === PHASE 7: PLACE SEQUENCE (optimized Cartesian retry) ===
+        checkEmergencyStop();
+        RCLCPP_INFO(node_->get_logger(), "⬇️ Phase 7: Moving linearly to PLACE pose with retry...");
+        if (!planAndExecuteCartesianPathWithRetry({place_pose}, "cartesian_to_place", cartesian_timeout, 0.9)) {
+            recordFailure("Failed Cartesian path to place pose after retrying");
+            return false;
         }
         
         checkEmergencyStop();
         openGripper();
         
         checkEmergencyStop();
-        RCLCPP_INFO(node_->get_logger(), "⬆️ Retreating linearly from PLACE pose...");
-        if (!planAndExecuteCartesianPath({place_approach_pose})) {
-            RCLCPP_ERROR(node_->get_logger(), "❌ Failed to retreat from place pose");
-            return safe_recovery("Failed to retreat from place pose");
+        RCLCPP_INFO(node_->get_logger(), "⬆️ Phase 8: Retreating linearly from PLACE pose with retry...");
+        if (!planAndExecuteCartesianPathWithRetry({place_approach_pose}, "cartesian_from_place", cartesian_timeout, 0.9)) {
+            recordFailure("Failed to retreat from place pose after retrying");
+            return executeRecoverySequence("Failed to retreat from place pose after retrying");
         }
         
-        // Final return to home
+        // === PHASE 9: FINAL RETURN TO HOME ===
         checkEmergencyStop();
-        if (!moveToHome()) {
+        RCLCPP_INFO(node_->get_logger(), "🏠 Phase 9: Final return to home...");
+        if (!planToJointWithRetry(safety_config_.home_joints, "final_return_to_home", home_timeout)) {
             RCLCPP_WARN(node_->get_logger(), "⚠️ Failed final return to home, but operation completed");
+        } else if (!executePlan()) {
+            RCLCPP_WARN(node_->get_logger(), "⚠️ Failed to execute final return to home, but operation completed");
+        } else {
+            recordPhaseCompletion("final_return_to_home");
         }
         
         last_metrics_.success = true;
-        RCLCPP_INFO(node_->get_logger(), "🎉 PRODUCTION Pick and Place completed successfully!");
+        RCLCPP_INFO(node_->get_logger(), "🎉 PRODUCTION Pick and Place with OPTIMIZED retry logic completed successfully!");
+        
+        // Log detailed metrics
+        RCLCPP_INFO(node_->get_logger(), "📊 Completed phases: %zu, Failed operations: %zu, Total retry operations: %zu",
+                   last_metrics_.completed_phases.size(), 
+                   last_metrics_.failed_operations.size(),
+                   last_metrics_.retry_counts.size());
+        
         return true;
         
     } catch (const RobotOperationError& e) {
@@ -589,12 +757,33 @@ bool RobotOperation::executeProfessionalPickAndPlace(
         }
         recordFailure(e.what());
         RCLCPP_ERROR(node_->get_logger(), "❌ Pick and place failed: %s", e.what());
-        return safe_recovery(e.what());
+        executeRecoverySequence(e.what());
+        return false;
     } catch (const std::exception& e) {
         recordFailure(std::string("Unexpected exception: ") + e.what());
         RCLCPP_ERROR(node_->get_logger(), "❌ Unexpected exception: %s", e.what());
-        return safe_recovery(std::string("Unexpected exception: ") + e.what());
+        executeRecoverySequence(std::string("Unexpected exception: ") + e.what());
+        return false;
     }
+}
+
+void RobotOperation::recordPhaseCompletion(const std::string& phase)
+{
+    last_metrics_.completed_phases.push_back(phase);
+    RCLCPP_DEBUG(node_->get_logger(), "📊 Phase completed: %s", phase.c_str());
+}
+
+void RobotOperation::recordOperationFailure(const std::string& operation)
+{
+    last_metrics_.failed_operations.push_back(operation);
+    RCLCPP_DEBUG(node_->get_logger(), "📊 Operation failed: %s", operation.c_str());
+}
+
+void RobotOperation::recordRetry(const std::string& operation)
+{
+    last_metrics_.retry_counts[operation]++;
+    RCLCPP_DEBUG(node_->get_logger(), "📊 Retry recorded for: %s (count: %d)", 
+                operation.c_str(), last_metrics_.retry_counts[operation]);
 }
 
 void RobotOperation::openGripper()
@@ -687,6 +876,390 @@ void RobotOperation::recordFailure(const std::string& reason)
 void RobotOperation::resetMetrics()
 {
     last_metrics_ = OperationMetrics{};
+}
+
+bool RobotOperation::planWithRetry(const geometry_msgs::msg::Pose& target_pose, 
+                                  const std::string& phase_name,
+                                  std::chrono::seconds timeout)
+{
+    checkEmergencyStop();
+    std::lock_guard<std::mutex> lock(operation_mutex_);
+    
+    auto phase_start = std::chrono::steady_clock::now();
+    RCLCPP_INFO(node_->get_logger(), "🔄 Starting retry planning for %s (timeout: %lds)", 
+                phase_name.c_str(), timeout.count());
+    
+    RetryStatistics stats;
+    stats.start_time = phase_start;
+    
+    // Validate pose reachability first (quick check)
+    if (!validatePoseReachability(target_pose)) {
+        RCLCPP_ERROR(node_->get_logger(), "❌ %s pose failed reachability validation", phase_name.c_str());
+        recordFailure(phase_name + " - pose not reachable");
+        return false;
+    }
+    
+    // === IMMEDIATE FIRST ATTEMPT ===
+    if (attemptPlanning(target_pose, stats)) {
+        auto planning_time = std::chrono::steady_clock::now() - phase_start;
+        RCLCPP_INFO(node_->get_logger(), "⚡ %s planning succeeded on FIRST attempt (%.3fs)", 
+                   phase_name.c_str(), std::chrono::duration<double>(planning_time).count());
+        
+        last_metrics_.planning_time = std::chrono::duration<double>(planning_time);
+        recordRetry(phase_name);
+        return true;
+    }
+    
+    // === RETRY LOOP ===
+    RCLCPP_INFO(node_->get_logger(), "🔄 First attempt failed, starting retry loop for %s...", phase_name.c_str());
+    
+    auto last_progress_log = phase_start;
+    const auto progress_interval = std::chrono::seconds(5);
+    
+    while (std::chrono::steady_clock::now() - phase_start < timeout) {
+        checkEmergencyStop();
+        
+        if (attemptPlanning(target_pose, stats)) {
+            auto planning_time = std::chrono::steady_clock::now() - phase_start;
+            RCLCPP_INFO(node_->get_logger(), "✅ %s planning successful after %d attempts (%.2fs)", 
+                       phase_name.c_str(), stats.total_attempts, 
+                       std::chrono::duration<double>(planning_time).count());
+            
+            last_metrics_.planning_time = std::chrono::duration<double>(planning_time);
+            recordRetry(phase_name);
+            return true;
+        }
+        
+        // Progress logging
+        auto now = std::chrono::steady_clock::now();
+        if (now - last_progress_log >= progress_interval) {
+            logRetryProgress(phase_name, stats, timeout);
+            last_progress_log = now;
+        }
+        
+        std::this_thread::sleep_for(std::chrono::milliseconds(50)); // Reduced delay
+    }
+    
+    // Timeout reached
+    auto total_time = std::chrono::steady_clock::now() - phase_start;
+    RCLCPP_ERROR(node_->get_logger(), "⏰ %s planning timeout after %d attempts in %.1fs", 
+                phase_name.c_str(), stats.total_attempts, 
+                std::chrono::duration<double>(total_time).count());
+    
+    recordFailure(phase_name + " - planning timeout after " + std::to_string(stats.total_attempts) + " attempts");
+    return false;
+}
+
+bool RobotOperation::planToJointWithRetry(const std::vector<double>& joint_values,
+                                         const std::string& phase_name, 
+                                         std::chrono::seconds timeout)
+{
+    checkEmergencyStop();
+    std::lock_guard<std::mutex> lock(operation_mutex_);
+    
+    auto phase_start = std::chrono::steady_clock::now();
+    RCLCPP_INFO(node_->get_logger(), "🔄 Starting joint retry planning for %s (timeout: %lds)", 
+                phase_name.c_str(), timeout.count());
+    
+    // Validate joint limits first
+    if (!validateJointLimits(joint_values)) {
+        RCLCPP_ERROR(node_->get_logger(), "❌ %s joint values violate limits", phase_name.c_str());
+        recordFailure(phase_name + " - joint limits violation");
+        return false;
+    }
+    
+    RetryStatistics stats;
+    stats.start_time = phase_start;
+    
+    // === IMMEDIATE FIRST ATTEMPT ===
+    if (attemptJointPlanning(joint_values, stats)) {
+        auto planning_time = std::chrono::steady_clock::now() - phase_start;
+        RCLCPP_INFO(node_->get_logger(), "⚡ %s joint planning succeeded on FIRST attempt (%.3fs)", 
+                   phase_name.c_str(), std::chrono::duration<double>(planning_time).count());
+        
+        last_metrics_.planning_time = std::chrono::duration<double>(planning_time);
+        recordRetry(phase_name);
+        return true;
+    }
+    
+    // === RETRY LOOP ===
+    RCLCPP_INFO(node_->get_logger(), "🔄 First attempt failed, starting retry loop for %s...", phase_name.c_str());
+    
+    auto last_progress_log = phase_start;
+    const auto progress_interval = std::chrono::seconds(5);
+    
+    while (std::chrono::steady_clock::now() - phase_start < timeout) {
+        checkEmergencyStop();
+        
+        if (attemptJointPlanning(joint_values, stats)) {
+            auto planning_time = std::chrono::steady_clock::now() - phase_start;
+            RCLCPP_INFO(node_->get_logger(), "✅ %s joint planning successful after %d attempts (%.2fs)", 
+                       phase_name.c_str(), stats.total_attempts,
+                       std::chrono::duration<double>(planning_time).count());
+            
+            last_metrics_.planning_time = std::chrono::duration<double>(planning_time);
+            recordRetry(phase_name);
+            return true;
+        }
+        
+        // Progress logging
+        auto now = std::chrono::steady_clock::now();
+        if (now - last_progress_log >= progress_interval) {
+            logRetryProgress(phase_name, stats, timeout);
+            last_progress_log = now;
+        }
+        
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    
+    auto total_time = std::chrono::steady_clock::now() - phase_start;
+    RCLCPP_ERROR(node_->get_logger(), "⏰ %s joint planning timeout after %d attempts in %.1fs", 
+                phase_name.c_str(), stats.total_attempts, 
+                std::chrono::duration<double>(total_time).count());
+    
+    recordFailure(phase_name + " - joint planning timeout after " + std::to_string(stats.total_attempts) + " attempts");
+    return false;
+}
+
+bool RobotOperation::attemptPlanning(const geometry_msgs::msg::Pose& target_pose, RetryStatistics& stats)
+{
+    stats.total_attempts++;
+    auto attempt_start = std::chrono::steady_clock::now();
+    
+    try {
+        move_group_->setPoseTarget(target_pose);
+        auto result = move_group_->plan(current_plan_);
+        
+        auto attempt_time = std::chrono::steady_clock::now() - attempt_start;
+        stats.total_planning_time += attempt_time;
+        
+        if (result == moveit::core::MoveItErrorCode::SUCCESS) {
+            stats.successful_attempts++;
+            return true;
+        }
+        
+        // FIXED: Simplified debug logging without error code details
+        if (stats.total_attempts % 20 == 0) {
+            RCLCPP_DEBUG(node_->get_logger(), "🔄 Planning attempt %d failed", 
+                        stats.total_attempts);
+        }
+        
+        return false;
+        
+    } catch (const std::exception& e) {
+        RCLCPP_WARN(node_->get_logger(), "⚠️ Exception in planning attempt %d: %s", 
+                   stats.total_attempts, e.what());
+        return false;
+    }
+}
+
+bool RobotOperation::attemptJointPlanning(const std::vector<double>& joint_values, RetryStatistics& stats)
+{
+    stats.total_attempts++;
+    auto attempt_start = std::chrono::steady_clock::now();
+    
+    try {
+        move_group_->setJointValueTarget(joint_values);
+        auto result = move_group_->plan(current_plan_);
+        
+        auto attempt_time = std::chrono::steady_clock::now() - attempt_start;
+        stats.total_planning_time += attempt_time;
+        
+        if (result == moveit::core::MoveItErrorCode::SUCCESS) {
+            stats.successful_attempts++;
+            return true;
+        }
+        
+        // FIXED: No error code casting
+        return false;
+        
+    } catch (const std::exception& e) {
+        RCLCPP_WARN(node_->get_logger(), "⚠️ Exception in joint planning attempt %d: %s", 
+                   stats.total_attempts, e.what());
+        return false;
+    }
+}
+
+void RobotOperation::logRetryProgress(const std::string& phase_name, const RetryStatistics& stats, 
+                                     std::chrono::seconds timeout)
+{
+    auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - stats.start_time);
+    auto remaining = std::chrono::duration<double>(timeout) - elapsed;
+    
+    double success_rate = stats.total_attempts > 0 ? 
+                         (double)stats.successful_attempts / stats.total_attempts * 100.0 : 0.0;
+    
+    RCLCPP_INFO(node_->get_logger(), 
+                "🔄 %s planning progress: %d attempts, %.1f%% success rate, %.1fs remaining", 
+                phase_name.c_str(), stats.total_attempts, success_rate, remaining.count());
+}
+
+bool RobotOperation::planAndExecuteCartesianPathWithRetry(
+    const std::vector<geometry_msgs::msg::Pose>& waypoints,
+    const std::string& phase_name,
+    std::chrono::seconds timeout,
+    double min_success_fraction)
+{
+    checkEmergencyStop();
+    
+    if (waypoints.empty()) {
+        RCLCPP_ERROR(node_->get_logger(), "❌ %s: No waypoints provided", phase_name.c_str());
+        recordFailure(phase_name + " - no waypoints provided");
+        return false;
+    }
+
+    auto phase_start = std::chrono::steady_clock::now();
+    RCLCPP_INFO(node_->get_logger(), "🔄 Starting Cartesian retry planning for %s (timeout: %lds, min_fraction: %.1f%%)", 
+                phase_name.c_str(), timeout.count(), min_success_fraction * 100.0);
+
+    CartesianRetryStatistics stats;
+    stats.start_time = phase_start;
+    
+    moveit_msgs::msg::RobotTrajectory best_trajectory;
+    
+    // === IMMEDIATE FIRST ATTEMPT (no delay) ===
+    if (attemptCartesianPlanning(waypoints, stats, min_success_fraction, best_trajectory)) {
+        auto planning_time = std::chrono::steady_clock::now() - phase_start;
+        RCLCPP_INFO(node_->get_logger(), "⚡ %s Cartesian planning succeeded on FIRST attempt (%.3fs, %.1f%% coverage)", 
+                   phase_name.c_str(), std::chrono::duration<double>(planning_time).count(),
+                   stats.best_fraction * 100.0);
+        
+        // Execute immediately - NO DELAY
+        return executeCartesianTrajectory(best_trajectory, phase_name);
+    }
+    
+    // === RETRY LOOP (only if first attempt failed) ===
+    RCLCPP_INFO(node_->get_logger(), "🔄 First attempt failed, starting retry loop for %s...", phase_name.c_str());
+    
+    auto last_progress_log = phase_start;
+    const auto progress_interval = std::chrono::seconds(5); // Log every 5 seconds
+    
+    while (std::chrono::steady_clock::now() - phase_start < timeout) {
+        checkEmergencyStop();
+        
+        // Attempt planning
+        if (attemptCartesianPlanning(waypoints, stats, min_success_fraction, best_trajectory)) {
+            auto planning_time = std::chrono::steady_clock::now() - phase_start;
+            RCLCPP_INFO(node_->get_logger(), "✅ %s Cartesian planning successful after %d attempts (%.2fs, %.1f%% coverage)", 
+                       phase_name.c_str(), stats.total_attempts, 
+                       std::chrono::duration<double>(planning_time).count(),
+                       stats.best_fraction * 100.0);
+            
+            // Execute immediately - NO DELAY
+            return executeCartesianTrajectory(best_trajectory, phase_name);
+        }
+        
+        // Progress logging (less frequent to reduce spam)
+        auto now = std::chrono::steady_clock::now();
+        if (now - last_progress_log >= progress_interval) {
+            logCartesianRetryProgress(phase_name, stats, timeout);
+            last_progress_log = now;
+        }
+        
+        // OPTIMIZED: Smaller delay, faster retry rate
+        std::this_thread::sleep_for(std::chrono::milliseconds(50)); // Reduced from 100ms
+    }
+    
+    // Timeout reached
+    auto total_time = std::chrono::steady_clock::now() - phase_start;
+    RCLCPP_ERROR(node_->get_logger(), "⏰ %s Cartesian planning timeout after %d attempts in %.1fs (best: %.1f%%)", 
+                phase_name.c_str(), stats.total_attempts, 
+                std::chrono::duration<double>(total_time).count(), stats.best_fraction * 100.0);
+    
+    recordFailure(phase_name + " - Cartesian planning timeout after " + std::to_string(stats.total_attempts) + 
+                 " attempts (best coverage: " + std::to_string(stats.best_fraction * 100.0) + "%)");
+    return false;
+}
+
+bool RobotOperation::executeCartesianTrajectory(
+    const moveit_msgs::msg::RobotTrajectory& trajectory, 
+    const std::string& phase_name)
+{
+    RCLCPP_INFO(node_->get_logger(), "🚀 Executing Cartesian trajectory for %s...", phase_name.c_str());
+    
+    auto execution_start = std::chrono::steady_clock::now();
+    bool success = move_group_->execute(trajectory) == moveit::core::MoveItErrorCode::SUCCESS;
+    auto execution_time = std::chrono::steady_clock::now() - execution_start;
+    
+    recordExecutionTime();
+    
+    if (success) {
+        RCLCPP_INFO(node_->get_logger(), "✅ %s Cartesian execution completed (%.2fs)", 
+                   phase_name.c_str(), std::chrono::duration<double>(execution_time).count());
+        recordPhaseCompletion(phase_name);
+        recordRetry(phase_name);
+        return true;
+    } else {
+        RCLCPP_ERROR(node_->get_logger(), "❌ %s Cartesian execution failed after %.2fs", 
+                    phase_name.c_str(), std::chrono::duration<double>(execution_time).count());
+        recordFailure(phase_name + " - execution failed after successful planning");
+        return false;
+    }
+}
+
+
+bool RobotOperation::attemptCartesianPlanning(
+    const std::vector<geometry_msgs::msg::Pose>& waypoints,
+    CartesianRetryStatistics& stats,
+    double min_success_fraction,
+    moveit_msgs::msg::RobotTrajectory& best_trajectory)
+{
+    stats.total_attempts++;
+    auto attempt_start = std::chrono::steady_clock::now();
+    
+    try {
+        moveit_msgs::msg::RobotTrajectory trajectory;
+        double fraction = move_group_->computeCartesianPath(
+            waypoints, 
+            safety_config_.cartesian_step_size, 
+            safety_config_.cartesian_jump_threshold, 
+            trajectory
+        );
+        
+        auto attempt_time = std::chrono::steady_clock::now() - attempt_start;
+        stats.total_planning_time += attempt_time;
+        
+        // Update best fraction achieved
+        if (fraction > stats.best_fraction) {
+            stats.best_fraction = fraction;
+            best_trajectory = trajectory; // Store the best trajectory so far
+        }
+        
+        // Check if this attempt meets our success criteria
+        if (fraction >= min_success_fraction) {
+            stats.successful_attempts++;
+            return true;
+        }
+        
+        // Log occasional attempts for debugging
+        if (stats.total_attempts % 20 == 0) {
+            RCLCPP_DEBUG(node_->get_logger(), "🔄 Cartesian attempt %d: %.1f%% coverage (need %.1f%%)", 
+                        stats.total_attempts, fraction * 100.0, min_success_fraction * 100.0);
+        }
+        
+        return false;
+        
+    } catch (const std::exception& e) {
+        RCLCPP_WARN(node_->get_logger(), "⚠️ Exception in Cartesian planning attempt %d: %s", 
+                   stats.total_attempts, e.what());
+        return false;
+    }
+}
+
+void RobotOperation::logCartesianRetryProgress(const std::string& phase_name, 
+                                              const CartesianRetryStatistics& stats, 
+                                              std::chrono::seconds timeout)
+{
+    auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - stats.start_time);
+    auto remaining = std::chrono::duration<double>(timeout) - elapsed;
+    
+    double success_rate = stats.total_attempts > 0 ? 
+                         (double)stats.successful_attempts / stats.total_attempts * 100.0 : 0.0;
+    
+    RCLCPP_INFO(node_->get_logger(), 
+                "🔄 %s Cartesian progress: %d attempts, %.1f%% success rate, best coverage: %.1f%%, %.1fs remaining", 
+                phase_name.c_str(), stats.total_attempts, success_rate, 
+                stats.best_fraction * 100.0, remaining.count());
 }
 
 } // namespace trajectory_plan

@@ -1,0 +1,37 @@
+# PickAndPlace.action
+# Custom action definition for trajectory_plan package
+
+# GOAL - What the camera perception package sends (MM and DEGREES)
+float64 pick_x_mm              # Pick position X in millimeters
+float64 pick_y_mm              # Pick position Y in millimeters  
+float64 pick_z_mm              # Pick position Z in millimeters
+float64 pick_roll_deg          # Pick orientation roll in degrees
+float64 pick_pitch_deg         # Pick orientation pitch in degrees
+float64 pick_yaw_deg           # Pick orientation yaw in degrees
+
+float64 place_x_mm             # Place position X in millimeters
+float64 place_y_mm             # Place position Y in millimeters
+float64 place_z_mm             # Place position Z in millimeters
+float64 place_roll_deg         # Place orientation roll in degrees
+float64 place_pitch_deg        # Place orientation pitch in degrees
+float64 place_yaw_deg          # Place orientation yaw in degrees
+
+float64 clearance_height_mm    # Clearance height in millimeters (default: 50.0)
+bool smooth_motion             # Enable smooth motion mode (default: true)
+string operation_id            # Unique identifier for this operation
+---
+# RESULT - What trajectory_plan returns after completion
+bool success                   # True if operation completed successfully
+string message                 # Human-readable status message
+string failure_reason          # Detailed failure context if success=false
+float64 planning_time_seconds  # Total planning time
+float64 execution_time_seconds # Total execution time
+uint32 recovery_attempts       # Number of recovery attempts used
+string operation_id            # Echo of the operation ID
+---
+# FEEDBACK - Progress updates during execution
+string current_phase           # Current operation phase
+float64 completion_percentage  # 0.0 to 100.0
+string status_message          # Current status description
+float64 elapsed_time_seconds   # Time since operation started
+bool emergency_stop_available  # True if emergency stop is possible

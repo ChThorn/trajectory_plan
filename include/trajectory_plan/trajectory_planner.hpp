@@ -2,10 +2,12 @@
 #define TRAJECTORY_PLANNER_HPP
 
 #include <rclcpp/rclcpp.hpp>
+#include <rclcpp_action/rclcpp_action.hpp>
 #include <moveit/move_group_interface/move_group_interface.h>
 #include <moveit/planning_scene_interface/planning_scene_interface.h>
 #include <visualization_msgs/msg/marker_array.hpp>
 #include "robot_operation.hpp"
+#include "trajectory_plan/action/pick_and_place.hpp"  // Custom action
 #include <atomic>
 #include <mutex>
 
@@ -41,14 +43,19 @@ struct PlannerConfiguration
 
 /**
  * @class TrajectoryPlanner
- * @brief Production-ready trajectory planner with enhanced safety and error handling.
+ * @brief Production-ready trajectory planner with action server interface.
  *
- * This class provides a high-level interface for robot trajectory planning and execution,
- * integrating workspace constraints, collision avoidance, and comprehensive error recovery.
+ * This class provides both direct API and ROS action server interfaces for robot 
+ * trajectory planning and execution, integrating workspace constraints, collision 
+ * avoidance, and comprehensive error recovery.
  */
 class TrajectoryPlanner
 {
 public:
+    // Action type alias for convenience
+    using PickAndPlaceAction = trajectory_plan::action::PickAndPlace;
+    using GoalHandlePickAndPlace = rclcpp_action::ServerGoalHandle<PickAndPlaceAction>;
+
     explicit TrajectoryPlanner(const rclcpp::Node::SharedPtr& node);
     
     ~TrajectoryPlanner() {
@@ -59,7 +66,7 @@ public:
     bool initialize();
     void updateConfiguration(const PlannerConfiguration& config);
     
-    // --- High-Level Operations ---
+    // --- High-Level Operations (Direct API) ---
     bool executeProfessionalPickAndPlace(
         double pick_x_mm, double pick_y_mm, double pick_z_mm,
         double pick_roll_deg, double pick_pitch_deg, double pick_yaw_deg,
@@ -88,6 +95,11 @@ public:
         return robot_operation_.get(); 
     }
 
+    // --- Action Server Interface ---
+    void startActionServer();
+    void stopActionServer();
+    bool isActionServerActive() const { return action_server_ != nullptr; }
+
 private:
     // --- Core Components ---
     rclcpp::Node::SharedPtr node_;
@@ -95,11 +107,17 @@ private:
     std::shared_ptr<moveit::planning_interface::PlanningSceneInterface> planning_scene_interface_;
     std::unique_ptr<RobotOperation> robot_operation_;
     
+    // --- Action Server Components ---
+    rclcpp_action::Server<PickAndPlaceAction>::SharedPtr action_server_;
+    std::shared_ptr<GoalHandlePickAndPlace> current_goal_handle_;
+    
     // --- Thread Safety ---
     mutable std::mutex operation_mutex_;
     mutable std::mutex visualization_mutex_;
+    mutable std::mutex action_mutex_;
     std::atomic<bool> operational_{false};
     std::atomic<bool> shutdown_requested_{false};
+    std::atomic<bool> action_in_progress_{false};
     
     // --- Configuration ---
     PlannerConfiguration config_;
@@ -109,7 +127,29 @@ private:
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_publisher_;
     rclcpp::TimerBase::SharedPtr visualization_timer_;
     
-    // --- Private Methods ---
+    // --- Action Server Callbacks ---
+    rclcpp_action::GoalResponse handleGoal(
+        const rclcpp_action::GoalUUID & uuid,
+        std::shared_ptr<const PickAndPlaceAction::Goal> goal);
+    
+    rclcpp_action::CancelResponse handleCancel(
+        const std::shared_ptr<GoalHandlePickAndPlace> goal_handle);
+    
+    void handleAccepted(const std::shared_ptr<GoalHandlePickAndPlace> goal_handle);
+    
+    void executePickAndPlaceAction(const std::shared_ptr<GoalHandlePickAndPlace> goal_handle);
+    
+    // --- Action Helper Methods ---
+    void publishFeedback(const std::shared_ptr<GoalHandlePickAndPlace> goal_handle,
+                        const std::string& phase, 
+                        double completion_percentage,
+                        const std::string& status_message = "");
+    
+    bool validateActionGoal(const std::shared_ptr<const PickAndPlaceAction::Goal> goal);
+    
+    geometry_msgs::msg::Pose convertToMeterPose(const geometry_msgs::msg::Pose& pose_in_mm);
+    
+    // --- Private Methods (existing) ---
     bool setupCollisionScene();
     bool addWorkspaceConstraints();
     void publishWorkspaceBoundary();
@@ -120,6 +160,32 @@ private:
     bool validateConfiguration() const;
     bool validateWorkspaceConfiguration() const;
     bool validateRobotConfiguration() const;
+
+    // Performance optimization: cache workspace bounds
+    mutable std::optional<std::array<double, 6>> cached_workspace_bounds_; // x_min, x_max, y_min, y_max, z_min, z_max
+    mutable std::mutex workspace_cache_mutex_;
+    
+    void invalidateWorkspaceCache() {
+        std::lock_guard<std::mutex> lock(workspace_cache_mutex_);
+        cached_workspace_bounds_.reset();
+    }
+    
+    std::array<double, 6> getWorkspaceBounds() const {
+        std::lock_guard<std::mutex> lock(workspace_cache_mutex_);
+        
+        if (!cached_workspace_bounds_) {
+            cached_workspace_bounds_ = std::array<double, 6>{
+                config_.workspace.x_position - config_.workspace.width / 2.0,   // x_min
+                config_.workspace.x_position + config_.workspace.width / 2.0,   // x_max
+                config_.workspace.y_position - config_.workspace.depth / 2.0,   // y_min
+                config_.workspace.y_position + config_.workspace.depth / 2.0,   // y_max
+                config_.workspace.z_position - config_.workspace.height / 2.0,  // z_min
+                config_.workspace.z_position + config_.workspace.height / 2.0   // z_max
+            };
+        }
+        
+        return *cached_workspace_bounds_;
+    }
 };
 
 } // namespace trajectory_plan

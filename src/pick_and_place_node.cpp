@@ -14,12 +14,16 @@ public:
   {
     RCLCPP_INFO(get_logger(), "🚀 Pick and Place Node starting...");
     
+    // Declare parameter for demo mode
+    this->declare_parameter<std::string>("demo_mode", "action_server");  // "direct_api" or "action_server"
+    
     // Initialize thread-safe shutdown handling
     setupShutdownHandler();
     
     loadConfiguration();
     printConfiguration();
     
+    // Start initialization after a short delay
     timer_ = create_wall_timer(
       std::chrono::seconds(3),
       std::bind(&PickAndPlaceNode::main_task, this));
@@ -48,6 +52,7 @@ private:
     double place_roll_deg, place_pitch_deg, place_yaw_deg;
     double clearance_height_mm;
     bool smooth_motion;
+    std::string demo_mode;
   } demo_config_;
   
   std::unique_ptr<trajectory_plan::TrajectoryPlanner> trajectory_planner_;
@@ -85,6 +90,9 @@ private:
         std::lock_guard<std::mutex> tp_lock(trajectory_planner_mutex_);
         if (trajectory_planner_) {
             try {
+                // Stop action server first
+                trajectory_planner_->stopActionServer();
+                // Then stop robot motion
                 trajectory_planner_->stop();
                 RCLCPP_INFO(get_logger(), "✅ Robot motion stopped successfully.");
             } catch (const std::exception& e) {
@@ -129,7 +137,7 @@ private:
     this->declare_parameter<double>("robot.cartesian_jump_threshold", 0.0);
     this->declare_parameter<bool>("robot.smooth_motion", true);
     
-    // --- Safety Configuration (NEW) ---
+    // --- Safety Configuration ---
     this->declare_parameter<std::vector<double>>("safety.home_joints", {0.0, 0.0, 0.0, 0.0, 0.0, 0.0});
     this->declare_parameter<std::vector<double>>("safety.safe_joints", {0.0, -0.5, -1.0, 0.0, 1.5, 0.0});
     this->declare_parameter<std::vector<double>>("safety.emergency_joints", {0.0, -0.3, -0.8, 0.0, 1.1, 0.0});
@@ -237,11 +245,13 @@ private:
     
     demo_config_.clearance_height_mm = this->get_parameter("demo.clearance_height_mm").as_double();
     demo_config_.smooth_motion = this->get_parameter("robot.smooth_motion").as_bool();
+    demo_config_.demo_mode = this->get_parameter("demo_mode").as_string();
   }
   
   void printConfiguration()
   {
     RCLCPP_INFO(get_logger(), "📋 Configuration loaded:");
+    RCLCPP_INFO(get_logger(), "   Demo Mode: %s", demo_config_.demo_mode.c_str());
     RCLCPP_INFO(get_logger(), "   Table: %.2f x %.2f x %.2f m at [%.2f, %.2f, %.2f]", 
                 config_.table.length, config_.table.width, config_.table.height,
                 config_.table.x_offset, config_.table.y_offset, config_.table.z_position);
@@ -261,7 +271,7 @@ private:
   }
 
   void main_task()
-  {
+{
     // Cancel timer first to prevent re-entry
     if (timer_) {
         timer_->cancel();
@@ -285,14 +295,30 @@ private:
             return;
         }
         
-        // Execute demo
-        executeDemo();
+        // Execute demo based on mode
+        if (demo_config_.demo_mode == "action_server") {
+            startActionServerDemo();
+            
+            // FIXED: Keep node alive to handle action requests
+            // Don't shutdown immediately - let the node continue running
+            RCLCPP_INFO(get_logger(), "🔄 Node will continue running to handle action requests...");
+            // The main executor will continue spinning and processing action callbacks
+            
+        } else {
+            executeDirectApiDemo();
+            
+            // For direct API, shutdown after completion
+            if (rclcpp::ok()) {
+                RCLCPP_INFO(get_logger(), "🏁 Demo finished. Initiating clean shutdown...");
+                rclcpp::shutdown();
+            }
+        }
         
     } catch (const std::exception& e) {
         RCLCPP_ERROR(get_logger(), "❌ Exception in main_task: %s", e.what());
         safeShutdown();
     }
-  }
+}
   
   bool waitForController()
   {
@@ -337,117 +363,39 @@ private:
     }
   }
 
-  bool validateConfiguration()
+  void startActionServerDemo()
+{
+    std::lock_guard<std::mutex> lock(trajectory_planner_mutex_);
+    
+    if (!trajectory_planner_) {
+        RCLCPP_ERROR(get_logger(), "❌ Trajectory planner not available");
+        return;
+    }
+    
+    RCLCPP_INFO(get_logger(), "🎬 Starting ACTION SERVER demo mode...");
+    
+    // Start the action server
+    trajectory_planner_->startActionServer();
+    
+    if (!trajectory_planner_->isActionServerActive()) {
+        RCLCPP_ERROR(get_logger(), "❌ Failed to start action server");
+        return;
+    }
+    
+    RCLCPP_INFO(get_logger(), "🚀 Action Server is running!");
+    RCLCPP_INFO(get_logger(), "📡 Waiting for action clients to connect...");
+    RCLCPP_INFO(get_logger(), "💡 Use 'ros2 action send_goal /pick_and_place trajectory_plan/action/PickAndPlace' to test");
+    RCLCPP_INFO(get_logger(), "⏸️  Server will run until shutdown (Ctrl+C)");
+    RCLCPP_INFO(get_logger(), "✅ Action server started successfully. Main executor will handle callbacks.");
+    
+    // FIXED: Don't block with infinite loop! Let main executor handle callbacks
+    // The action server is now active and will be processed by the main executor
+}
+
+  void executeDirectApiDemo()
   {
-    bool valid = true;
+    RCLCPP_INFO(get_logger(), "🎬 Starting DIRECT API demo mode...");
     
-    // Validate table dimensions
-    if (config_.table.length <= 0 || config_.table.width <= 0 || config_.table.height <= 0) {
-        RCLCPP_ERROR(get_logger(), "❌ Invalid table dimensions");
-        valid = false;
-    }
-    
-    // Validate workspace dimensions
-    if (config_.workspace.width <= 0 || config_.workspace.depth <= 0 || config_.workspace.height <= 0) {
-        RCLCPP_ERROR(get_logger(), "❌ Invalid workspace dimensions");
-        valid = false;
-    }
-    
-    // Validate robot scaling factors
-    if (config_.robot.velocity_scaling < 0.01 || config_.robot.velocity_scaling > 1.0) {
-        RCLCPP_ERROR(get_logger(), "❌ Invalid velocity scaling: %.2f (must be 0.01-1.0)", 
-                    config_.robot.velocity_scaling);
-        valid = false;
-    }
-    
-    if (config_.robot.acceleration_scaling < 0.01 || config_.robot.acceleration_scaling > 1.0) {
-        RCLCPP_ERROR(get_logger(), "❌ Invalid acceleration scaling: %.2f (must be 0.01-1.0)", 
-                    config_.robot.acceleration_scaling);
-        valid = false;
-    }
-    
-    // Validate planning parameters
-    if (config_.robot.planning_time <= 0 || config_.robot.planning_time > 30.0) {
-        RCLCPP_ERROR(get_logger(), "❌ Invalid planning time: %.1f (must be 0-30s)", 
-                    config_.robot.planning_time);
-        valid = false;
-    }
-    
-    if (config_.robot.planning_attempts < 1 || config_.robot.planning_attempts > 50) {
-        RCLCPP_ERROR(get_logger(), "❌ Invalid planning attempts: %d (must be 1-50)", 
-                    config_.robot.planning_attempts);
-        valid = false;
-    }
-    
-    // Validate safety configuration
-    if (safety_config_.home_joints.size() != 6 || 
-        safety_config_.safe_joints.size() != 6 || 
-        safety_config_.emergency_joints.size() != 6) {
-        RCLCPP_ERROR(get_logger(), "❌ Safety joint positions must have exactly 6 values");
-        valid = false;
-    }
-    
-    if (safety_config_.safety_stop_timeout <= 0 || safety_config_.safety_stop_timeout > 10.0) {
-        RCLCPP_ERROR(get_logger(), "❌ Invalid safety stop timeout: %.1f (must be 0-10s)", 
-                    safety_config_.safety_stop_timeout);
-        valid = false;
-    }
-    
-    // Validate demo positions are within workspace
-    if (!validateDemoPositions()) {
-        valid = false;
-    }
-    
-    if (valid) {
-        RCLCPP_INFO(get_logger(), "✅ Configuration validation passed");
-    }
-    
-    return valid;
-  }
-  
-  bool validateDemoPositions()
-  {
-    auto pick_pose = geometry_msgs::msg::Pose();
-    pick_pose.position.x = demo_config_.pick_x_mm / 1000.0;
-    pick_pose.position.y = demo_config_.pick_y_mm / 1000.0;
-    pick_pose.position.z = demo_config_.pick_z_mm / 1000.0;
-    
-    auto place_pose = geometry_msgs::msg::Pose();
-    place_pose.position.x = demo_config_.place_x_mm / 1000.0;
-    place_pose.position.y = demo_config_.place_y_mm / 1000.0;
-    place_pose.position.z = demo_config_.place_z_mm / 1000.0;
-    
-    // Basic workspace bounds check
-    double x_min = config_.workspace.x_position - config_.workspace.width / 2.0;
-    double x_max = config_.workspace.x_position + config_.workspace.width / 2.0;
-    double y_min = config_.workspace.y_position - config_.workspace.depth / 2.0;
-    double y_max = config_.workspace.y_position + config_.workspace.depth / 2.0;
-    double z_min = config_.workspace.z_position - config_.workspace.height / 2.0;
-    double z_max = config_.workspace.z_position + config_.workspace.height / 2.0;
-    
-    bool pick_valid = (pick_pose.position.x >= x_min && pick_pose.position.x <= x_max &&
-                       pick_pose.position.y >= y_min && pick_pose.position.y <= y_max &&
-                       pick_pose.position.z >= z_min && pick_pose.position.z <= z_max);
-    
-    bool place_valid = (place_pose.position.x >= x_min && place_pose.position.x <= x_max &&
-                        place_pose.position.y >= y_min && place_pose.position.y <= y_max &&
-                        place_pose.position.z >= z_min && place_pose.position.z <= z_max);
-    
-    if (!pick_valid) {
-        RCLCPP_ERROR(get_logger(), "❌ Pick position [%.1f, %.1f, %.1f] mm outside workspace", 
-                    demo_config_.pick_x_mm, demo_config_.pick_y_mm, demo_config_.pick_z_mm);
-    }
-    
-    if (!place_valid) {
-        RCLCPP_ERROR(get_logger(), "❌ Place position [%.1f, %.1f, %.1f] mm outside workspace", 
-                    demo_config_.place_x_mm, demo_config_.place_y_mm, demo_config_.place_z_mm);
-    }
-    
-    return pick_valid && place_valid;
-  }
-  
-  void executeDemo()
-  {
     // Check for shutdown before starting
     if (shutdown_requested_.load() || !rclcpp::ok()) {
         RCLCPP_WARN(get_logger(), "Shutdown requested before demo execution");
@@ -510,6 +458,76 @@ private:
         RCLCPP_INFO(get_logger(), "🏁 Demo finished. Initiating clean shutdown...");
         rclcpp::shutdown();
     }
+  }
+
+  bool validateConfiguration()
+  {
+    bool valid = true;
+    
+    // Validate demo mode
+    if (demo_config_.demo_mode != "direct_api" && demo_config_.demo_mode != "action_server") {
+        RCLCPP_ERROR(get_logger(), "❌ Invalid demo_mode: %s (must be 'direct_api' or 'action_server')", 
+                    demo_config_.demo_mode.c_str());
+        valid = false;
+    }
+    
+    // Validate table dimensions
+    if (config_.table.length <= 0 || config_.table.width <= 0 || config_.table.height <= 0) {
+        RCLCPP_ERROR(get_logger(), "❌ Invalid table dimensions");
+        valid = false;
+    }
+    
+    // Validate workspace dimensions
+    if (config_.workspace.width <= 0 || config_.workspace.depth <= 0 || config_.workspace.height <= 0) {
+        RCLCPP_ERROR(get_logger(), "❌ Invalid workspace dimensions");
+        valid = false;
+    }
+    
+    // Validate robot scaling factors
+    if (config_.robot.velocity_scaling < 0.01 || config_.robot.velocity_scaling > 1.0) {
+        RCLCPP_ERROR(get_logger(), "❌ Invalid velocity scaling: %.2f (must be 0.01-1.0)", 
+                    config_.robot.velocity_scaling);
+        valid = false;
+    }
+    
+    if (config_.robot.acceleration_scaling < 0.01 || config_.robot.acceleration_scaling > 1.0) {
+        RCLCPP_ERROR(get_logger(), "❌ Invalid acceleration scaling: %.2f (must be 0.01-1.0)", 
+                    config_.robot.acceleration_scaling);
+        valid = false;
+    }
+    
+    // Validate planning parameters
+    if (config_.robot.planning_time <= 0 || config_.robot.planning_time > 30.0) {
+        RCLCPP_ERROR(get_logger(), "❌ Invalid planning time: %.1f (must be 0-30s)", 
+                    config_.robot.planning_time);
+        valid = false;
+    }
+    
+    if (config_.robot.planning_attempts < 1 || config_.robot.planning_attempts > 50) {
+        RCLCPP_ERROR(get_logger(), "❌ Invalid planning attempts: %d (must be 1-50)", 
+                    config_.robot.planning_attempts);
+        valid = false;
+    }
+    
+    // Validate safety configuration
+    if (safety_config_.home_joints.size() != 6 || 
+        safety_config_.safe_joints.size() != 6 || 
+        safety_config_.emergency_joints.size() != 6) {
+        RCLCPP_ERROR(get_logger(), "❌ Safety joint positions must have exactly 6 values");
+        valid = false;
+    }
+    
+    if (safety_config_.safety_stop_timeout <= 0 || safety_config_.safety_stop_timeout > 10.0) {
+        RCLCPP_ERROR(get_logger(), "❌ Invalid safety stop timeout: %.1f (must be 0-10s)", 
+                    safety_config_.safety_stop_timeout);
+        valid = false;
+    }
+    
+    if (valid) {
+        RCLCPP_INFO(get_logger(), "✅ Configuration validation passed");
+    }
+    
+    return valid;
   }
 };
 

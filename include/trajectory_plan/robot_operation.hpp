@@ -49,15 +49,40 @@ struct SafetyConfiguration {
     bool require_manual_recovery = false;
     bool validate_joint_limits = true;
     bool validate_reachability = true;
+
+    // === NEW: Adaptive timeout configuration ===
+    struct {
+        double home_position_timeout = 15.0;      // Reduced for simple moves
+        double approach_planning_timeout = 30.0;   // Reduced from 60s
+        double cartesian_planning_timeout = 30.0;  // Reduced from 60s
+        double complex_planning_timeout = 60.0;    // For genuinely complex moves
+        bool adaptive_timeouts = true;             // Enable adaptive timeout scaling
+    } timeouts;
+    
+    // === NEW: Performance optimization ===
+    struct {
+        bool fast_first_attempt = true;      // Optimize first attempts
+        double retry_delay_ms = 50.0;        // Reduced retry delay
+        double progress_log_interval = 5.0;  // Log progress every 5s
+        bool immediate_exit_on_success = true; // Exit immediately on success
+    } performance;
 };
 
 struct OperationMetrics {
     std::chrono::steady_clock::time_point start_time;
     std::chrono::duration<double> planning_time{0};
     std::chrono::duration<double> execution_time{0};
+    std::chrono::duration<double> total_time{0};
     size_t recovery_attempts = 0;
     bool success = false;
     std::string failure_reason;
+    
+    // NEW: Enhanced metrics
+    std::vector<std::string> completed_phases;
+    std::vector<std::string> failed_operations;
+    std::map<std::string, int> retry_counts;
+    double gripper_time = 0.0;
+    double cartesian_path_efficiency = 0.0; // % of path successfully planned
 };
 
 /**
@@ -121,6 +146,23 @@ public:
     OperationMetrics getLastOperationMetrics() const { return last_metrics_; }
     void resetMetrics();
 
+    // --- Enhanced Planning with Retry Logic ---
+    bool planWithRetry(const geometry_msgs::msg::Pose& target_pose, 
+        const std::string& phase_name,
+        std::chrono::seconds timeout = std::chrono::seconds(60));
+
+    bool planToJointWithRetry(const std::vector<double>& joint_values,
+                const std::string& phase_name, 
+                std::chrono::seconds timeout = std::chrono::seconds(60));
+
+    // --- Enhanced Cartesian Planning with Retry Logic ---
+    bool planAndExecuteCartesianPathWithRetry(
+        const std::vector<geometry_msgs::msg::Pose>& waypoints,
+        const std::string& phase_name,
+        std::chrono::seconds timeout = std::chrono::seconds(60),
+        double min_success_fraction = 0.9
+    );
+
 private:
     // --- Core Components ---
     rclcpp::Node::SharedPtr node_;
@@ -156,6 +198,48 @@ private:
     void recordPlanningTime();
     void recordExecutionTime();
     void recordFailure(const std::string& reason);
+    void recordPhaseCompletion(const std::string& phase);
+    void recordOperationFailure(const std::string& operation);
+    void recordRetry(const std::string& operation);
+
+    // --- Retry Planning Helpers ---
+    struct RetryStatistics {
+        int total_attempts = 0;
+        int successful_attempts = 0;
+        std::chrono::duration<double> total_planning_time{0};
+        std::chrono::steady_clock::time_point start_time;
+        bool timeout_reached = false;
+    };
+    
+    bool attemptPlanning(const geometry_msgs::msg::Pose& target_pose, RetryStatistics& stats);
+    bool attemptJointPlanning(const std::vector<double>& joint_values, RetryStatistics& stats);
+    void logRetryProgress(const std::string& phase_name, const RetryStatistics& stats, 
+                         std::chrono::seconds timeout);
+
+    // --- Cartesian Retry Helpers ---
+    struct CartesianRetryStatistics {
+        int total_attempts = 0;
+        int successful_attempts = 0;
+        double best_fraction = 0.0;
+        std::chrono::duration<double> total_planning_time{0};
+        std::chrono::steady_clock::time_point start_time;
+        bool timeout_reached = false;
+    };
+    
+    bool attemptCartesianPlanning(
+        const std::vector<geometry_msgs::msg::Pose>& waypoints,
+        CartesianRetryStatistics& stats,
+        double min_success_fraction,
+        moveit_msgs::msg::RobotTrajectory& best_trajectory
+    );
+    
+    void logCartesianRetryProgress(const std::string& phase_name, 
+                                  const CartesianRetryStatistics& stats, 
+                                  std::chrono::seconds timeout);
+
+    bool executeCartesianTrajectory(
+                                    const moveit_msgs::msg::RobotTrajectory& trajectory, 
+                                    const std::string& phase_name);
 };
 
 } // namespace trajectory_plan

@@ -2,6 +2,7 @@
 #include <shape_msgs/msg/solid_primitive.hpp>
 #include <moveit_msgs/msg/collision_object.hpp>
 #include <moveit_msgs/msg/constraints.hpp>
+#include <thread> 
 
 namespace trajectory_plan
 {
@@ -126,6 +127,8 @@ void TrajectoryPlanner::updateConfiguration(const PlannerConfiguration& config)
     std::lock_guard<std::mutex> lock(operation_mutex_);
     
     config_ = config;
+    invalidateWorkspaceCache(); // Clear cache when config changes
+    
     if (robot_operation_) {
         robot_operation_->setVelocityScaling(config_.robot.velocity_scaling);
         robot_operation_->setAccelerationScaling(config_.robot.acceleration_scaling);
@@ -251,26 +254,22 @@ bool TrajectoryPlanner::addWorkspaceConstraints()
 
 bool TrajectoryPlanner::validatePoseInWorkspace(const geometry_msgs::msg::Pose& pose)
 {
-    double x_min = config_.workspace.x_position - config_.workspace.width / 2.0;
-    double x_max = config_.workspace.x_position + config_.workspace.width / 2.0;
-    double y_min = config_.workspace.y_position - config_.workspace.depth / 2.0;
-    double y_max = config_.workspace.y_position + config_.workspace.depth / 2.0;
-    double z_min = config_.workspace.z_position - config_.workspace.height / 2.0;
-    double z_max = config_.workspace.z_position + config_.workspace.height / 2.0;
-
-    bool valid = (pose.position.x >= x_min && pose.position.x <= x_max &&
-                  pose.position.y >= y_min && pose.position.y <= y_max &&
-                  pose.position.z >= z_min && pose.position.z <= z_max);
+    auto bounds = getWorkspaceBounds();
+    
+    bool valid = (pose.position.x >= bounds[0] && pose.position.x <= bounds[1] &&
+                  pose.position.y >= bounds[2] && pose.position.y <= bounds[3] &&
+                  pose.position.z >= bounds[4] && pose.position.z <= bounds[5]);
 
     if (!valid) {
         RCLCPP_WARN(node_->get_logger(), "❌ Pose [%.3f, %.3f, %.3f] is outside the defined workspace.", 
                      pose.position.x, pose.position.y, pose.position.z);
     } else {
-        RCLCPP_INFO(node_->get_logger(), "✅ Pose [%.3f, %.3f, %.3f] is within the workspace.", 
+        RCLCPP_DEBUG(node_->get_logger(), "✅ Pose [%.3f, %.3f, %.3f] is within the workspace.", 
                     pose.position.x, pose.position.y, pose.position.z);
     }
     return valid;
 }
+
 
 void TrajectoryPlanner::enableWorkspaceVisualization(bool enable)
 {
@@ -363,5 +362,445 @@ void TrajectoryPlanner::printWorkspaceLimits()
     RCLCPP_INFO(node_->get_logger(), "📐 Workspace Limits: X[%.3f, %.3f], Y[%.3f, %.3f], Z[%.3f, %.3f]",
                 x_min, x_max, y_min, y_max, z_min, z_max);
 }
+
+// === ACTION SERVER IMPLEMENTATION ===
+// Add these methods to trajectory_planner.cpp
+
+void TrajectoryPlanner::startActionServer()
+{
+    std::lock_guard<std::mutex> lock(action_mutex_);
+    
+    if (action_server_) {
+        RCLCPP_WARN(node_->get_logger(), "Action server already running");
+        return;
+    }
+    
+    if (!initialized_) {
+        RCLCPP_ERROR(node_->get_logger(), "❌ Cannot start action server - TrajectoryPlanner not initialized");
+        return;
+    }
+    
+    try {
+        RCLCPP_INFO(node_->get_logger(), "🔧 Creating action server with debug logging...");
+        
+        action_server_ = rclcpp_action::create_server<PickAndPlaceAction>(
+            node_,
+            "pick_and_place",  // Action name
+            [this](const rclcpp_action::GoalUUID & uuid, std::shared_ptr<const PickAndPlaceAction::Goal> goal) {
+                RCLCPP_INFO(node_->get_logger(), "🐛 DEBUG: handleGoal callback triggered!");
+                return this->handleGoal(uuid, goal);
+            },
+            [this](const std::shared_ptr<GoalHandlePickAndPlace> goal_handle) {
+                RCLCPP_INFO(node_->get_logger(), "🐛 DEBUG: handleCancel callback triggered!");
+                return this->handleCancel(goal_handle);
+            },
+            [this](const std::shared_ptr<GoalHandlePickAndPlace> goal_handle) {
+                RCLCPP_INFO(node_->get_logger(), "🐛 DEBUG: handleAccepted callback triggered!");
+                this->handleAccepted(goal_handle);
+            }
+        );
+        
+        if (action_server_) {
+            RCLCPP_INFO(node_->get_logger(), "🚀 Pick and Place Action Server created successfully");
+            // RCLCPP_INFO(node_->get_logger(), "🔧 Action server pointer: %p", action_server_.get());
+            RCLCPP_INFO(node_->get_logger(), "🔧 Action server pointer: %p", static_cast<void*>(action_server_.get()));
+        } else {
+            RCLCPP_ERROR(node_->get_logger(), "❌ Action server creation returned null pointer!");
+            return;
+        }
+        
+        // Small delay to ensure topics are advertised
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        
+        RCLCPP_INFO(node_->get_logger(), "🚀 Pick and Place Action Server started on 'pick_and_place'");
+        RCLCPP_INFO(node_->get_logger(), "🔧 Node name: %s", node_->get_name());
+        RCLCPP_INFO(node_->get_logger(), "🔧 Node namespace: %s", node_->get_namespace());
+        
+    } catch (const std::exception& e) {
+        RCLCPP_ERROR(node_->get_logger(), "❌ Failed to start action server: %s", e.what());
+        action_server_.reset();
+    }
+}
+
+void TrajectoryPlanner::stopActionServer()
+{
+    std::lock_guard<std::mutex> lock(action_mutex_);
+    
+    if (action_server_) {
+        // Cancel any ongoing action
+        if (current_goal_handle_ && action_in_progress_.load()) {
+            auto result = std::make_shared<PickAndPlaceAction::Result>();
+            result->success = false;
+            result->message = "Action server shutting down";
+            result->failure_reason = "Server shutdown requested";
+            
+            current_goal_handle_->abort(result);
+            current_goal_handle_.reset();
+        }
+        
+        action_server_.reset();
+        action_in_progress_.store(false);
+        RCLCPP_INFO(node_->get_logger(), "🛑 Pick and Place Action Server stopped");
+    }
+}
+
+rclcpp_action::GoalResponse TrajectoryPlanner::handleGoal(
+    const rclcpp_action::GoalUUID & uuid,
+    std::shared_ptr<const PickAndPlaceAction::Goal> goal)
+{
+    (void)uuid;  // Suppress unused parameter warning
+    
+    auto goal_received_time = std::chrono::steady_clock::now();
+    
+    RCLCPP_INFO(node_->get_logger(), "📨 Received pick and place goal request (ID: %s)", goal->operation_id.c_str());
+    RCLCPP_INFO(node_->get_logger(), "📍 Pick: [%.1f, %.1f, %.1f] mm", goal->pick_x_mm, goal->pick_y_mm, goal->pick_z_mm);
+    RCLCPP_INFO(node_->get_logger(), "📍 Place: [%.1f, %.1f, %.1f] mm", goal->place_x_mm, goal->place_y_mm, goal->place_z_mm);
+    
+    // === FAST VALIDATION (minimize response time) ===
+    
+    // Check if system is operational (immediate check)
+    if (!operational_.load()) {
+        RCLCPP_WARN(node_->get_logger(), "❌ Rejecting goal - system not operational");
+        return rclcpp_action::GoalResponse::REJECT;
+    }
+    
+    // Check if another action is in progress (immediate check)
+    if (action_in_progress_.load()) {
+        RCLCPP_WARN(node_->get_logger(), "❌ Rejecting goal - another action in progress");
+        return rclcpp_action::GoalResponse::REJECT;
+    }
+    
+    // Quick validation (avoid expensive checks in handleGoal)
+    if (goal->operation_id.empty()) {
+        RCLCPP_WARN(node_->get_logger(), "❌ Rejecting goal - empty operation_id");
+        return rclcpp_action::GoalResponse::REJECT;
+    }
+    
+    // Defer detailed validation to execution phase to speed up response
+    auto response_time = std::chrono::steady_clock::now() - goal_received_time;
+    RCLCPP_INFO(node_->get_logger(), "✅ Goal accepted (ID: %s) in %.3fs", 
+                goal->operation_id.c_str(), std::chrono::duration<double>(response_time).count());
+    
+    return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
+}
+
+rclcpp_action::CancelResponse TrajectoryPlanner::handleCancel(
+    const std::shared_ptr<GoalHandlePickAndPlace> goal_handle)
+{
+    (void)goal_handle;  // Suppress unused parameter warning
+    
+    RCLCPP_INFO(node_->get_logger(), "📨 Received cancel request for pick and place action");
+    
+    // Stop robot motion immediately
+    if (operational_.load()) {
+        stop();  // Emergency stop
+    }
+    
+    action_in_progress_.store(false);
+    RCLCPP_INFO(node_->get_logger(), "✅ Pick and place action cancelled successfully");
+    return rclcpp_action::CancelResponse::ACCEPT;
+}
+
+void TrajectoryPlanner::handleAccepted(const std::shared_ptr<GoalHandlePickAndPlace> goal_handle)
+{
+    std::lock_guard<std::mutex> lock(action_mutex_);
+    
+    current_goal_handle_ = goal_handle;
+    action_in_progress_.store(true);
+    
+    // Execute the action in a separate thread to avoid blocking
+    std::thread execution_thread(&TrajectoryPlanner::executePickAndPlaceAction, this, goal_handle);
+    execution_thread.detach();
+}
+
+void TrajectoryPlanner::executePickAndPlaceAction(const std::shared_ptr<GoalHandlePickAndPlace> goal_handle)
+{
+    const auto goal = goal_handle->get_goal();
+    auto result = std::make_shared<PickAndPlaceAction::Result>();
+    
+    // Initialize result with goal info
+    result->operation_id = goal->operation_id;
+    result->success = false;
+    
+    auto start_time = std::chrono::steady_clock::now();
+    
+    // IMPROVED: Timeout handling for the entire action
+    const auto action_timeout = std::chrono::minutes(5); // Configurable timeout
+    
+    try {
+        RCLCPP_INFO(node_->get_logger(), "🚀 Starting pick and place execution (ID: %s)", goal->operation_id.c_str());
+        
+        // Check timeout periodically during execution
+        auto check_timeout = [&]() -> bool {
+            if (std::chrono::steady_clock::now() - start_time > action_timeout) {
+                RCLCPP_ERROR(node_->get_logger(), "⏰ Action timeout reached for ID: %s", goal->operation_id.c_str());
+                result->message = "Action timeout reached";
+                result->failure_reason = "Execution time exceeded maximum allowed duration";
+                goal_handle->abort(result);
+                return true;
+            }
+            return false;
+        };
+        
+        // Publish initial feedback
+        publishFeedback(goal_handle, "initializing", 0.0, "Starting pick and place sequence");
+        if (check_timeout()) return;
+        
+        // Configure smooth motion if requested
+        if (goal->smooth_motion && robot_operation_) {
+            robot_operation_->setSmoothMotion(true);
+            publishFeedback(goal_handle, "configuring", 5.0, "Smooth motion enabled");
+        }
+        if (check_timeout()) return;
+        
+        // Validate poses are in workspace
+        publishFeedback(goal_handle, "validating", 10.0, "Validating target poses");
+        
+        auto pick_pose_for_validation = robot_operation_->createPoseFromMmAndDegrees(
+            goal->pick_x_mm, goal->pick_y_mm, goal->pick_z_mm, 0, 0, 0);
+        auto place_pose_for_validation = robot_operation_->createPoseFromMmAndDegrees(
+            goal->place_x_mm, goal->place_y_mm, goal->place_z_mm, 0, 0, 0);
+            
+        if (!validatePoseInWorkspace(pick_pose_for_validation) || !validatePoseInWorkspace(place_pose_for_validation)) {
+            result->message = "Target poses outside workspace";
+            result->failure_reason = "Workspace validation failed";
+            goal_handle->abort(result);
+            return;
+        }
+        if (check_timeout()) return;
+        
+        // Check for cancellation before starting main operation
+        if (goal_handle->is_canceling()) {
+            result->message = "Action cancelled before execution";
+            result->failure_reason = "User cancellation";
+            goal_handle->canceled(result);
+            return;
+        }
+        
+        publishFeedback(goal_handle, "executing_pick_place", 20.0, "Executing pick and place sequence");
+        
+        // IMPROVED: Execute with periodic cancellation checks
+        bool operation_success = false;
+        std::atomic<bool> execution_complete{false};
+        
+        // Run the main operation in a separate thread with timeout monitoring
+        std::thread execution_thread([&]() {
+            try {
+                operation_success = executeProfessionalPickAndPlace(
+                    goal->pick_x_mm, goal->pick_y_mm, goal->pick_z_mm, 
+                    goal->pick_roll_deg, goal->pick_pitch_deg, goal->pick_yaw_deg,
+                    goal->place_x_mm, goal->place_y_mm, goal->place_z_mm, 
+                    goal->place_roll_deg, goal->place_pitch_deg, goal->place_yaw_deg,
+                    goal->clearance_height_mm
+                );
+            } catch (const std::exception& e) {
+                RCLCPP_ERROR(node_->get_logger(), "❌ Exception in main operation: %s", e.what());
+                operation_success = false;
+            }
+            execution_complete.store(true);
+        });
+        
+        // Monitor execution with periodic checks
+        while (!execution_complete.load()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            
+            if (check_timeout() || goal_handle->is_canceling()) {
+                // Signal cancellation to robot operation
+                if (robot_operation_) {
+                    robot_operation_->emergencyStop();
+                }
+                execution_thread.join();
+                
+                if (goal_handle->is_canceling()) {
+                    result->message = "Action cancelled during execution";
+                    result->failure_reason = "User cancellation during operation";
+                    goal_handle->canceled(result);
+                } else {
+                    goal_handle->abort(result);
+                }
+                return;
+            }
+        }
+        
+        execution_thread.join();
+        
+        // Calculate final timing
+        auto end_time = std::chrono::steady_clock::now();
+        auto total_time = std::chrono::duration<double>(end_time - start_time).count();
+        
+        // Populate result with enhanced metrics
+        if (robot_operation_) {
+            auto metrics = robot_operation_->getLastOperationMetrics();
+            result->planning_time_seconds = metrics.planning_time.count();
+            result->execution_time_seconds = metrics.execution_time.count();
+            result->recovery_attempts = static_cast<uint32_t>(metrics.recovery_attempts);
+        }
+        
+        // Set final result
+        if (operation_success) {
+            publishFeedback(goal_handle, "completed", 100.0, "Pick and place completed successfully");
+            result->success = true;
+            result->message = "Pick and place operation completed successfully";
+            RCLCPP_INFO(node_->get_logger(), "✅ Pick and place action completed successfully (ID: %s, time: %.2fs)", 
+                       goal->operation_id.c_str(), total_time);
+            goal_handle->succeed(result);
+        } else {
+            result->message = "Pick and place operation failed";
+            result->failure_reason = robot_operation_ ? robot_operation_->getLastOperationMetrics().failure_reason : "Unknown failure";
+            RCLCPP_ERROR(node_->get_logger(), "❌ Pick and place action failed (ID: %s): %s", 
+                        goal->operation_id.c_str(), result->failure_reason.c_str());
+            goal_handle->abort(result);
+        }
+        
+    } catch (const std::exception& e) {
+        result->message = "Exception during pick and place execution";
+        result->failure_reason = std::string("Exception: ") + e.what();
+        RCLCPP_ERROR(node_->get_logger(), "❌ Exception in pick and place action: %s", e.what());
+        goal_handle->abort(result);
+    }
+    
+    // IMPROVED: Thread-safe cleanup with error handling
+    try {
+        std::lock_guard<std::mutex> lock(action_mutex_);
+        action_in_progress_.store(false);
+        current_goal_handle_.reset();
+    } catch (const std::exception& e) {
+        RCLCPP_WARN(node_->get_logger(), "⚠️ Exception during action cleanup: %s", e.what());
+    }
+}
+
+bool TrajectoryPlanner::validateConfiguration() const
+{
+    RCLCPP_INFO(node_->get_logger(), "🔍 Validating configuration...");
+    
+    // Validate workspace doesn't collide with table
+    double table_top = config_.table.z_position + config_.table.height;
+    double workspace_bottom = config_.workspace.z_position - config_.workspace.height / 2.0;
+    
+    if (workspace_bottom < table_top + 0.01) { // 1cm clearance
+        RCLCPP_ERROR(node_->get_logger(), 
+                    "❌ Workspace bottom (%.3f) too close to table top (%.3f)", 
+                    workspace_bottom, table_top);
+        return false;
+    }
+    
+    // Validate workspace and table overlap in X-Y plane
+    double table_x_min = config_.table.x_offset - config_.table.length / 2.0;
+    double table_x_max = config_.table.x_offset + config_.table.length / 2.0;
+    double table_y_min = config_.table.y_offset - config_.table.width / 2.0;
+    double table_y_max = config_.table.y_offset + config_.table.width / 2.0;
+    
+    double workspace_x_min = config_.workspace.x_position - config_.workspace.width / 2.0;
+    double workspace_x_max = config_.workspace.x_position + config_.workspace.width / 2.0;
+    double workspace_y_min = config_.workspace.y_position - config_.workspace.depth / 2.0;
+    double workspace_y_max = config_.workspace.y_position + config_.workspace.depth / 2.0;
+    
+    // Check if workspace completely contains table in X-Y
+    if (table_x_min < workspace_x_min || table_x_max > workspace_x_max ||
+        table_y_min < workspace_y_min || table_y_max > workspace_y_max) {
+        RCLCPP_WARN(node_->get_logger(), "⚠️ Table extends outside workspace in X-Y plane - this may cause issues");
+    }
+    
+    // Validate workspace dimensions are reasonable
+    if (config_.workspace.width > 3.0 || config_.workspace.depth > 3.0 || config_.workspace.height > 3.0) {
+        RCLCPP_WARN(node_->get_logger(), "⚠️ Large workspace dimensions may affect performance");
+    }
+    
+    // Validate robot scaling factors
+    if (config_.robot.velocity_scaling < 0.01 || config_.robot.velocity_scaling > 1.0) {
+        RCLCPP_ERROR(node_->get_logger(), "❌ Invalid velocity scaling: %.3f", config_.robot.velocity_scaling);
+        return false;
+    }
+    
+    if (config_.robot.acceleration_scaling < 0.01 || config_.robot.acceleration_scaling > 1.0) {
+        RCLCPP_ERROR(node_->get_logger(), "❌ Invalid acceleration scaling: %.3f", config_.robot.acceleration_scaling);
+        return false;
+    }
+    
+    // Validate planning parameters
+    if (config_.robot.planning_time <= 0.1 || config_.robot.planning_time > 30.0) {
+        RCLCPP_ERROR(node_->get_logger(), "❌ Invalid planning time: %.3f (must be 0.1-30s)", config_.robot.planning_time);
+        return false;
+    }
+    
+    RCLCPP_INFO(node_->get_logger(), "✅ Configuration validation passed");
+    return true;
+}
+
+void TrajectoryPlanner::publishFeedback(
+    const std::shared_ptr<GoalHandlePickAndPlace> goal_handle,
+    const std::string& phase, 
+    double completion_percentage,
+    const std::string& status_message)
+{
+    if (!goal_handle || goal_handle->is_canceling()) {
+        return;
+    }
+    
+    auto feedback = std::make_shared<PickAndPlaceAction::Feedback>();
+    feedback->current_phase = phase;
+    feedback->completion_percentage = completion_percentage;
+    feedback->status_message = status_message.empty() ? phase : status_message;
+    feedback->elapsed_time_seconds = 0.0;  // Could calculate if needed
+    feedback->emergency_stop_available = operational_.load();
+    
+    goal_handle->publish_feedback(feedback);
+    
+    RCLCPP_DEBUG(node_->get_logger(), "📊 Feedback: %s (%.1f%%) - %s", 
+                phase.c_str(), completion_percentage, feedback->status_message.c_str());
+}
+
+bool TrajectoryPlanner::validateActionGoal(const std::shared_ptr<const PickAndPlaceAction::Goal> goal)
+{
+    // Validate operation ID
+    if (goal->operation_id.empty()) {
+        RCLCPP_ERROR(node_->get_logger(), "❌ Goal validation failed: empty operation_id");
+        return false;
+    }
+    
+    // Validate clearance height (in mm now)
+    if (goal->clearance_height_mm <= 0.0 || goal->clearance_height_mm > 500.0) {  // 500mm max clearance
+        RCLCPP_ERROR(node_->get_logger(), "❌ Goal validation failed: invalid clearance_height_mm %.1f", 
+                    goal->clearance_height_mm);
+        return false;
+    }
+    
+    // Validate positions are within reasonable bounds (mm)
+    if (std::abs(goal->pick_x_mm) > 2000.0 || std::abs(goal->pick_y_mm) > 2000.0 || 
+        goal->pick_z_mm < -500.0 || goal->pick_z_mm > 2000.0) {
+        RCLCPP_ERROR(node_->get_logger(), "❌ Goal validation failed: pick position out of bounds [%.1f, %.1f, %.1f] mm", 
+                    goal->pick_x_mm, goal->pick_y_mm, goal->pick_z_mm);
+        return false;
+    }
+    
+    if (std::abs(goal->place_x_mm) > 2000.0 || std::abs(goal->place_y_mm) > 2000.0 || 
+        goal->place_z_mm < -500.0 || goal->place_z_mm > 2000.0) {
+        RCLCPP_ERROR(node_->get_logger(), "❌ Goal validation failed: place position out of bounds [%.1f, %.1f, %.1f] mm", 
+                    goal->place_x_mm, goal->place_y_mm, goal->place_z_mm);
+        return false;
+    }
+    
+    // Validate orientations (degrees)
+    if (std::abs(goal->pick_roll_deg) > 180.0 || std::abs(goal->pick_pitch_deg) > 180.0 || std::abs(goal->pick_yaw_deg) > 180.0 ||
+        std::abs(goal->place_roll_deg) > 180.0 || std::abs(goal->place_pitch_deg) > 180.0 || std::abs(goal->place_yaw_deg) > 180.0) {
+        RCLCPP_ERROR(node_->get_logger(), "❌ Goal validation failed: orientation values must be within ±180 degrees");
+        return false;
+    }
+    
+    RCLCPP_DEBUG(node_->get_logger(), "✅ Goal validation passed for operation_id: %s", goal->operation_id.c_str());
+    return true;
+}
+
+geometry_msgs::msg::Pose TrajectoryPlanner::convertToMeterPose(const geometry_msgs::msg::Pose& pose_in_mm)
+{
+    geometry_msgs::msg::Pose pose_in_m = pose_in_mm;
+    pose_in_m.position.x /= 1000.0;
+    pose_in_m.position.y /= 1000.0;
+    pose_in_m.position.z /= 1000.0;
+    // Orientation remains the same (quaternion)
+    return pose_in_m;
+}
+
+//=================================== End Action Server ==============================
 
 } // namespace trajectory_plan
