@@ -14,12 +14,12 @@ namespace trajectory_plan
     {
         struct {
             double length = 0.98, width = 0.49, height = 0.04;
-            double x_offset = 0.0, y_offset = 0.0, z_position = -0.027;
+            double x_offset = 0.43, y_offset = 0.0, z_position = -0.023;
         } table;
         
         struct {
-            double width = 1.4, depth = 1.2, height = 1.0;
-            double x_position = 0.4, y_position = 0.0, z_position = 0.5;
+            double width = 1.0, depth = 1.0, height = 1.0;
+            double x_position = 0.25, y_position = 0.0, z_position = 0.5;
             bool visualization_enabled = false;
         } workspace;
         

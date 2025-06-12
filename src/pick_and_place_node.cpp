@@ -64,9 +64,9 @@ private:
     this->declare_parameter<double>("table.length", 0.98);
     this->declare_parameter<double>("table.width", 0.49);
     this->declare_parameter<double>("table.height", 0.04);
-    this->declare_parameter<double>("table.x_offset", 0.45);
+    this->declare_parameter<double>("table.x_offset", 0.43);
     this->declare_parameter<double>("table.y_offset", 0.0);
-    this->declare_parameter<double>("table.z_position", -0.024);
+    this->declare_parameter<double>("table.z_position", -0.023);
 
     this->declare_parameter<double>("workspace.width", 1.0);
     this->declare_parameter<double>("workspace.depth", 1.0);
@@ -85,14 +85,14 @@ private:
     this->declare_parameter<double>("demo.pick_z_mm", 50.0);
     this->declare_parameter<double>("demo.pick_roll_deg", 0.0);
     this->declare_parameter<double>("demo.pick_pitch_deg", 90.0);
-    this->declare_parameter<double>("demo.pick_yaw_deg", 0.0);
+    this->declare_parameter<double>("demo.pick_yaw_deg", 12.0);
     
     this->declare_parameter<double>("demo.place_x_mm", 350.0);
     this->declare_parameter<double>("demo.place_y_mm", -150.0);
     this->declare_parameter<double>("demo.place_z_mm", 50.0);
     this->declare_parameter<double>("demo.place_roll_deg", 0.0);
     this->declare_parameter<double>("demo.place_pitch_deg", 90.0);
-    this->declare_parameter<double>("demo.place_yaw_deg", 0.0);
+    this->declare_parameter<double>("demo.place_yaw_deg", 13.0);
     
     this->declare_parameter<double>("demo.clearance_height_mm", 50.0);
     
@@ -328,7 +328,7 @@ bool validateConfiguration()
   
   std::unique_ptr<trajectory_plan::TrajectoryPlanner> trajectory_planner_;
   rclcpp::TimerBase::SharedPtr timer_;
-  
+
   void setupRobotSafety()
   {
     std::vector<double> emergency_joints = {0.0, -0.2, -0.6, 0.0, 0.8, 0.0};
