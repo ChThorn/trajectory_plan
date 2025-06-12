@@ -194,6 +194,8 @@ private:
             rclcpp::shutdown();
             return;
         }
+
+        setupRobotSafety();
         
         executeDemo();
     } catch (const std::exception& e) {
@@ -326,6 +328,16 @@ bool validateConfiguration()
   
   std::unique_ptr<trajectory_plan::TrajectoryPlanner> trajectory_planner_;
   rclcpp::TimerBase::SharedPtr timer_;
+  
+  void setupRobotSafety()
+  {
+    std::vector<double> emergency_joints = {0.0, -0.2, -0.6, 0.0, 0.8, 0.0};
+    
+    if (trajectory_planner_ && trajectory_planner_->getRobotOperation()) {
+        trajectory_planner_->getRobotOperation()->setEmergencySafePosition(emergency_joints);
+        RCLCPP_INFO(get_logger(), "🚨 Emergency safe position configured");
+    }
+  }
 };
 
 int main(int argc, char** argv)

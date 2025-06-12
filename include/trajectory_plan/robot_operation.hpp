@@ -84,6 +84,10 @@ public:
     double x_mm, double y_mm, double z_mm,
     double roll_deg, double pitch_deg, double yaw_deg
   );
+
+  // Add this method declaration
+  bool executeRecoverySequence(const std::string& failure_context = "");
+  void setEmergencySafePosition(const std::vector<double>& joints);
   
 private:
   // --- Core Components ---
@@ -102,6 +106,17 @@ private:
   
   // --- Private Methods ---
   bool planAndExecuteCartesianPath(const std::vector<geometry_msgs::msg::Pose>& waypoints);
+
+
+  enum class RecoveryLevel {
+    HOME_POSITION = 0,
+    SAFE_POSITION = 1,
+    CURRENT_POSITION = 2,
+    EMERGENCY_STOP = 3
+  };
+  // Fallback joint positions (progressively safer)
+  std::vector<double> emergency_safe_joints_;
+  bool attemptSafeMove(const std::vector<double>& joint_values, const std::string& position_name);
 };
 
 } // namespace trajectory_plan

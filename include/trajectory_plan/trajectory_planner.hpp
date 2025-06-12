@@ -33,7 +33,7 @@ namespace trajectory_plan
         
         struct {
             double gripper_action_time = 1.0;     // NEW: configurable gripper timing
-            std::string manipulation_group = "manipulation"; // NEW: configurable group name
+            std::string manipulation_group = "mainpulation"; // NEW: configurable group name
         } gripper;
     };
 
@@ -77,6 +77,10 @@ public:
 
   void enableWorkspaceVisualization(bool enable = true);
   void printWorkspaceLimits();
+
+  // Add this method to access the robot operation for configuration
+  RobotOperation* getRobotOperation() { return robot_operation_.get(); }
+
 
 private:
   rclcpp::Node::SharedPtr node_;

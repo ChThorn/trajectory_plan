@@ -26,6 +26,115 @@ RobotOperation::RobotOperation(
   
   initialized_ = true;
   RCLCPP_INFO(node_->get_logger(), "✅ RobotOperation initialized");
+
+  // Set a conservative emergency safe position (slightly bent arms, away from table)
+  emergency_safe_joints_ = {0.0, -0.3, -0.8, 0.0, 1.1, 0.0};  // More conservative than home
+}
+
+// New method: Set emergency safe position
+void RobotOperation::setEmergencySafePosition(const std::vector<double>& joints)
+{
+    if (joints.size() == move_group_->getJointNames().size()) {
+        emergency_safe_joints_ = joints;
+        RCLCPP_INFO(node_->get_logger(), "🚨 Emergency safe position updated");
+    } else {
+        RCLCPP_WARN(node_->get_logger(), "⚠️ Invalid emergency safe position size");
+    }
+}
+
+// New method: Hierarchical recovery sequence
+bool RobotOperation::executeRecoverySequence(const std::string& failure_context)
+{
+    if (!rclcpp::ok()) return false;
+    
+    RCLCPP_WARN(node_->get_logger(), "🛟 Starting recovery sequence due to: %s", 
+                failure_context.empty() ? "Unknown failure" : failure_context.c_str());
+    
+    // Level 0: Try home position first
+    RCLCPP_INFO(node_->get_logger(), "🏠 Recovery Level 0: Attempting home position...");
+    if (attemptSafeMove(home_joint_values_, "home")) {
+        RCLCPP_INFO(node_->get_logger(), "✅ Recovery successful - reached home position");
+        return true;
+    }
+    
+    // Level 1: Try safe position
+    RCLCPP_INFO(node_->get_logger(), "🛡️ Recovery Level 1: Attempting safe position...");
+    if (attemptSafeMove(safe_joint_values_, "safe")) {
+        RCLCPP_INFO(node_->get_logger(), "✅ Recovery successful - reached safe position");
+        return true;
+    }
+    
+    // Level 2: Try emergency safe position
+    RCLCPP_INFO(node_->get_logger(), "🚨 Recovery Level 2: Attempting emergency safe position...");
+    if (attemptSafeMove(emergency_safe_joints_, "emergency safe")) {
+        RCLCPP_INFO(node_->get_logger(), "✅ Recovery successful - reached emergency safe position");
+        return true;
+    }
+    
+    // Level 3: Stop in place (last resort)
+    RCLCPP_ERROR(node_->get_logger(), "🛑 Recovery Level 3: All positions unreachable - stopping in place");
+    move_group_->stop();
+    
+    // Give system time to settle
+    waitForMotionComplete(2.0);
+    
+    RCLCPP_ERROR(node_->get_logger(), "❌ All recovery attempts failed. Robot may need manual intervention.");
+    return false;
+}
+
+// Helper method for safe movement attempts
+bool RobotOperation::attemptSafeMove(const std::vector<double>& joint_values, const std::string& position_name)
+{
+    if (!rclcpp::ok()) return false;
+    
+    try {
+        // Use more conservative settings for recovery
+        double original_vel = velocity_scaling_factor_;
+        double original_acc = acceleration_scaling_factor_;
+        
+        // Slow and careful movement for recovery
+        setVelocityScaling(0.1);
+        setAccelerationScaling(0.1);
+        
+        // Set joint target
+        move_group_->setJointValueTarget(joint_values);
+        
+        // Plan with shorter timeout for recovery
+        move_group_->setPlanningTime(3.0);
+        
+        // Attempt to plan
+        moveit::planning_interface::MoveGroupInterface::Plan recovery_plan;
+        bool plan_success = (move_group_->plan(recovery_plan) == moveit::core::MoveItErrorCode::SUCCESS);
+        
+        if (plan_success) {
+            // Execute the plan
+            bool execute_success = (move_group_->execute(recovery_plan) == moveit::core::MoveItErrorCode::SUCCESS);
+            
+            // Restore original settings
+            setVelocityScaling(original_vel);
+            setAccelerationScaling(original_acc);
+            move_group_->setPlanningTime(5.0);  // Restore original planning time
+            
+            if (execute_success) {
+                RCLCPP_INFO(node_->get_logger(), "✅ Successfully moved to %s position", position_name.c_str());
+                return true;
+            } else {
+                RCLCPP_WARN(node_->get_logger(), "❌ Failed to execute movement to %s position", position_name.c_str());
+            }
+        } else {
+            RCLCPP_WARN(node_->get_logger(), "❌ Failed to plan movement to %s position", position_name.c_str());
+        }
+        
+        // Restore settings even on failure
+        setVelocityScaling(original_vel);
+        setAccelerationScaling(original_acc);
+        move_group_->setPlanningTime(5.0);
+        
+    } catch (const std::exception& e) {
+        RCLCPP_ERROR(node_->get_logger(), "❌ Exception during recovery to %s: %s", position_name.c_str(), e.what());
+    }
+    
+    return false;
 }
 
 void RobotOperation::setVelocityScaling(double scaling)
@@ -166,18 +275,16 @@ bool RobotOperation::executeProfessionalPickAndPlace(
     auto place_approach_pose = place_pose;
     place_approach_pose.position.z += clearance_m;
     
-    // Lambda for safe recovery to home
-    auto safe_recovery = [this]() -> bool {
-        if (!rclcpp::ok()) return false;
-        RCLCPP_WARN(node_->get_logger(), "🏠 Attempting recovery to home position...");
-        return moveToHome();
+    // IMPROVED: Replace simple lambda with comprehensive recovery
+    auto safe_recovery = [this](const std::string& context) -> bool {
+        return this->executeRecoverySequence(context);
     };
     
     // Execute sequence with recovery and shutdown checks on each step
     if (!rclcpp::ok()) return false;
     if (!moveToHome()) {
         RCLCPP_ERROR(node_->get_logger(), "❌ Failed to move to home at start");
-        return false;
+        return safe_recovery("Failed to reach home at startup");
     }
     
     // PICK SEQUENCE
@@ -185,8 +292,7 @@ bool RobotOperation::executeProfessionalPickAndPlace(
     RCLCPP_INFO(node_->get_logger(), "🎯 Starting PICK sequence...");
     if (!planToPose(pick_approach_pose) || !executePlan()) {
         RCLCPP_ERROR(node_->get_logger(), "❌ Failed to reach pick approach pose");
-        safe_recovery();
-        return false;
+        return safe_recovery("Failed to reach pick approach pose");
     }
     
     if (!rclcpp::ok()) return false;
@@ -196,8 +302,7 @@ bool RobotOperation::executeProfessionalPickAndPlace(
     RCLCPP_INFO(node_->get_logger(), "⬇️ Moving linearly to PICK pose...");
     if (!planAndExecuteCartesianPath({pick_pose})) {
         RCLCPP_ERROR(node_->get_logger(), "❌ Failed to reach pick pose");
-        safe_recovery();
-        return false;
+        return safe_recovery("Failed to reach pick pose");
     }
     
     if (!rclcpp::ok()) return false;
@@ -209,8 +314,7 @@ bool RobotOperation::executeProfessionalPickAndPlace(
         RCLCPP_ERROR(node_->get_logger(), "❌ Failed to retreat from pick pose");
         // Critical failure - object may be grasped, attempt gentle recovery
         openGripper(); // Release object before recovery
-        safe_recovery();
-        return false;
+        return safe_recovery("Failed to retreat from pick with object");
     }
     
     // Return to home as intermediate safe position
@@ -218,7 +322,7 @@ bool RobotOperation::executeProfessionalPickAndPlace(
     RCLCPP_INFO(node_->get_logger(), "🏠 Returning to Home as intermediate position...");
     if (!moveToHome()) {
         RCLCPP_ERROR(node_->get_logger(), "❌ Failed to return to home after pick");
-        return false;
+        return safe_recovery("Failed to return home after pick");
     }
     
     // PLACE SEQUENCE
@@ -226,16 +330,14 @@ bool RobotOperation::executeProfessionalPickAndPlace(
     RCLCPP_INFO(node_->get_logger(), "📦 Starting PLACE sequence...");
     if (!planToPose(place_approach_pose) || !executePlan()) {
         RCLCPP_ERROR(node_->get_logger(), "❌ Failed to reach place approach pose");
-        safe_recovery();
-        return false;
+        return safe_recovery("Failed to reach place approach pose");
     }
     
     if (!rclcpp::ok()) return false;
     RCLCPP_INFO(node_->get_logger(), "⬇️ Moving linearly to PLACE pose...");
     if (!planAndExecuteCartesianPath({place_pose})) {
         RCLCPP_ERROR(node_->get_logger(), "❌ Failed to reach place pose");
-        safe_recovery();
-        return false;
+        return safe_recovery("Failed to reach place pose");
     }
     
     if (!rclcpp::ok()) return false;
@@ -245,8 +347,7 @@ bool RobotOperation::executeProfessionalPickAndPlace(
     RCLCPP_INFO(node_->get_logger(), "⬆️ Retreating linearly from PLACE pose...");
     if (!planAndExecuteCartesianPath({place_approach_pose})) {
         RCLCPP_ERROR(node_->get_logger(), "❌ Failed to retreat from place pose");
-        safe_recovery();
-        return false;
+        return safe_recovery("Failed to retreat from place pose");
     }
     
     // Final return to home
