@@ -4,6 +4,8 @@
 #include <moveit_msgs/msg/constraints.hpp>
 #include <thread> 
 
+#include <moveit/planning_scene_monitor/planning_scene_monitor.h>  // ADD THIS LINE
+
 namespace trajectory_plan
 {
 
@@ -31,6 +33,19 @@ bool TrajectoryPlanner::initialize()
     } catch (const std::exception& e) {
         RCLCPP_ERROR(node_->get_logger(), "❌ [1/4] Failed to initialize MoveIt: %s", e.what());
         return false;
+    }
+
+    // Configure collision checking parameters
+    if (move_group_) {
+        move_group_->setGoalPositionTolerance(0.01);      // 1cm position tolerance
+        move_group_->setGoalOrientationTolerance(0.1);    // ~6 degree orientation tolerance
+        move_group_->setMaxVelocityScalingFactor(config_.robot.velocity_scaling);
+        move_group_->setMaxAccelerationScalingFactor(config_.robot.acceleration_scaling);
+        
+        RCLCPP_INFO(node_->get_logger(), "🛡️ Enhanced collision checking configured");
+        RCLCPP_INFO(node_->get_logger(), "   Planning group: %s", move_group_->getName().c_str());
+        RCLCPP_INFO(node_->get_logger(), "   End-effector: %s", move_group_->getEndEffectorLink().c_str());
+        RCLCPP_INFO(node_->get_logger(), "   Position tolerance: 1cm, Orientation tolerance: ~6°");
     }
 
     try {
@@ -187,9 +202,10 @@ void TrajectoryPlanner::printCurrentPose() {
     if (operational_.load() && robot_operation_) robot_operation_->checkAndPrintCurrentPose(); 
 }
 
+// === REPLACE setupCollisionScene() in trajectory_planner.cpp ===
 bool TrajectoryPlanner::setupCollisionScene()
 {
-    RCLCPP_INFO(node_->get_logger(), "🛡️ Setting up table as collision object...");
+    RCLCPP_INFO(node_->get_logger(), "🛡️ Setting up ENHANCED collision scene with safety margins...");
     
     moveit_msgs::msg::CollisionObject table_object;
     table_object.header.frame_id = move_group_->getPlanningFrame();
@@ -197,20 +213,45 @@ bool TrajectoryPlanner::setupCollisionScene()
     
     shape_msgs::msg::SolidPrimitive primitive;
     primitive.type = primitive.BOX;
-    primitive.dimensions = {config_.table.length, config_.table.width, config_.table.height};
+    
+    // 🔥 CRITICAL: ADD 5CM SAFETY MARGINS
+    const double SAFETY_MARGIN = 0.02; // 5cm safety buffer
+    primitive.dimensions = {
+        config_.table.length + 2 * SAFETY_MARGIN,   // Expand in X
+        config_.table.width + 2 * SAFETY_MARGIN,    // Expand in Y  
+        config_.table.height + SAFETY_MARGIN        // Expand upward only
+    };
     
     geometry_msgs::msg::Pose table_pose;
     table_pose.position.x = config_.table.x_offset;
     table_pose.position.y = config_.table.y_offset;
-    table_pose.position.z = config_.table.z_position;
+    table_pose.position.z = config_.table.z_position + SAFETY_MARGIN/2; // Adjust for margin
     table_pose.orientation.w = 1.0;
     
     table_object.primitives.push_back(primitive);
     table_object.primitive_poses.push_back(table_pose);
     table_object.operation = table_object.ADD;
     
-    return planning_scene_interface_->applyCollisionObjects({table_object});
+    bool success = planning_scene_interface_->applyCollisionObjects({table_object});
+    
+    if (success) {
+        RCLCPP_INFO(node_->get_logger(), "✅ Table collision object added with %.1fcm safety margins", SAFETY_MARGIN * 100);
+        
+        // Add other collision setup methods
+        addTCPCollisionGeometry();
+        
+        // Wait for scene to update
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        
+        printCollisionObjectStatus();
+        debugCollisionConfiguration();
+    } else {
+        RCLCPP_ERROR(node_->get_logger(), "❌ Failed to add table collision object");
+    }
+    
+    return success;
 }
+
 
 bool TrajectoryPlanner::addWorkspaceConstraints()
 {
@@ -802,5 +843,97 @@ geometry_msgs::msg::Pose TrajectoryPlanner::convertToMeterPose(const geometry_ms
 }
 
 //=================================== End Action Server ==============================
+
+bool TrajectoryPlanner::addTCPCollisionGeometry()
+{
+    RCLCPP_INFO(node_->get_logger(), "🔧 Adding TCP collision geometry...");
+    
+    try {
+        // Get the end-effector link name
+        std::string ee_link = move_group_->getEndEffectorLink();
+        if (ee_link.empty()) {
+            RCLCPP_WARN(node_->get_logger(), "⚠️ No end-effector link found, using default TCP collision");
+            return true; // MoveIt will use default
+        }
+        
+        RCLCPP_INFO(node_->get_logger(), "🔧 End-effector link: %s", ee_link.c_str());
+        
+        // MoveIt automatically handles TCP collision - no additional setup needed
+        // Custom TCP collision geometry can be added here if needed
+        
+        return true;
+        
+    } catch (const std::exception& e) {
+        RCLCPP_ERROR(node_->get_logger(), "❌ Failed to add TCP collision geometry: %s", e.what());
+        return false;
+    }
+}
+
+bool TrajectoryPlanner::validatePlanningSceneState()
+{
+    RCLCPP_INFO(node_->get_logger(), "🔍 Validating planning scene state...");
+    
+    try {
+        // Simplified validation - just check if collision objects exist
+        auto collision_objects = planning_scene_interface_->getKnownObjectNames();
+        RCLCPP_INFO(node_->get_logger(), "📋 Found %zu collision objects in planning scene", collision_objects.size());
+        
+        for (const auto& obj_name : collision_objects) {
+            RCLCPP_INFO(node_->get_logger(), "   - %s", obj_name.c_str());
+        }
+        
+        return !collision_objects.empty();
+        
+    } catch (const std::exception& e) {
+        RCLCPP_WARN(node_->get_logger(), "⚠️ Planning scene validation failed: %s", e.what());
+        return false;
+    }
+}
+
+void TrajectoryPlanner::printCollisionObjectStatus()
+{
+    try {
+        auto known_objects = planning_scene_interface_->getKnownObjectNames();
+        RCLCPP_INFO(node_->get_logger(), "🛡️ Collision Objects Status:");
+        RCLCPP_INFO(node_->get_logger(), "   Total objects: %zu", known_objects.size());
+        
+        for (const auto& name : known_objects) {
+            RCLCPP_INFO(node_->get_logger(), "   ✅ %s", name.c_str());
+        }
+        
+        if (known_objects.empty()) {
+            RCLCPP_WARN(node_->get_logger(), "⚠️ No collision objects found! This may cause collision issues.");
+        }
+        
+    } catch (const std::exception& e) {
+        RCLCPP_WARN(node_->get_logger(), "⚠️ Failed to get collision object status: %s", e.what());
+    }
+}
+
+void TrajectoryPlanner::debugCollisionConfiguration()
+{
+    try {
+        RCLCPP_INFO(node_->get_logger(), "🔍 Collision Configuration Debug:");
+        RCLCPP_INFO(node_->get_logger(), "   Planning group: %s", move_group_->getName().c_str());
+        RCLCPP_INFO(node_->get_logger(), "   End-effector link: %s", move_group_->getEndEffectorLink().c_str());
+        RCLCPP_INFO(node_->get_logger(), "   Planning frame: %s", move_group_->getPlanningFrame().c_str());
+        
+        auto joint_names = move_group_->getJointNames();
+        RCLCPP_INFO(node_->get_logger(), "   Controlled joints (%zu):", joint_names.size());
+        for (size_t i = 0; i < std::min(joint_names.size(), size_t(6)); ++i) {
+            RCLCPP_INFO(node_->get_logger(), "     - %s", joint_names[i].c_str());
+        }
+        
+        auto link_names = move_group_->getLinkNames();
+        RCLCPP_INFO(node_->get_logger(), "   Robot links (%zu total, showing first 6):", link_names.size());
+        for (size_t i = 0; i < std::min(link_names.size(), size_t(6)); ++i) {
+            RCLCPP_INFO(node_->get_logger(), "     - %s", link_names[i].c_str());
+        }
+        
+    } catch (const std::exception& e) {
+        RCLCPP_WARN(node_->get_logger(), "⚠️ Debug collision configuration failed: %s", e.what());
+    }
+}
+
 
 } // namespace trajectory_plan

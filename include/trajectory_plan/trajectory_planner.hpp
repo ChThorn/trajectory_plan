@@ -100,6 +100,10 @@ public:
     void stopActionServer();
     bool isActionServerActive() const { return action_server_ != nullptr; }
 
+    // === NEW: Collision validation API ===
+    bool validateCurrentStateCollisionFree();
+    bool validatePoseCollisionFree(const geometry_msgs::msg::Pose& pose);
+
 private:
     // --- Core Components ---
     rclcpp::Node::SharedPtr node_;
@@ -186,6 +190,20 @@ private:
         
         return *cached_workspace_bounds_;
     }
+
+    // === NEW: Enhanced collision checking methods ===
+    bool validateTrajectoryCollisionFree(const moveit::planning_interface::MoveGroupInterface::Plan& plan);
+    bool addTCPCollisionGeometry();
+    bool addSafetyMarginsToCollisionObjects();
+    void printCollisionObjectStatus();
+    bool validatePlanningSceneState();
+
+    // === ADD THESE NEW COLLISION METHODS ===
+    // bool addTCPCollisionGeometry();
+    // bool addSafetyMarginsToCollisionObjects();
+    // void printCollisionObjectStatus();
+    // bool validatePlanningSceneState();
+    void debugCollisionConfiguration();
 };
 
 } // namespace trajectory_plan

@@ -240,6 +240,10 @@ private:
     bool executeCartesianTrajectory(
                                     const moveit_msgs::msg::RobotTrajectory& trajectory, 
                                     const std::string& phase_name);
+
+    // === ADD THESE NEW COLLISION VALIDATION METHODS ===
+    bool validateTrajectoryCollisionFree();
+    bool validateCurrentStateCollisionFree();
 };
 
 } // namespace trajectory_plan
