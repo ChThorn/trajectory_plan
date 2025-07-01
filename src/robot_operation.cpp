@@ -484,6 +484,168 @@ bool RobotOperation::planAndExecuteCartesianPath(const std::vector<geometry_msgs
     return success;
 }
 
+// bool RobotOperation::executeProfessionalPickAndPlace(
+//     double pick_x_mm, double pick_y_mm, double pick_z_mm,
+//     double pick_roll_deg, double pick_pitch_deg, double pick_yaw_deg,
+//     double place_x_mm, double place_y_mm, double place_z_mm,
+//     double place_roll_deg, double place_pitch_deg, double place_yaw_deg,
+//     double clearance_height_mm)
+// {
+//     checkEmergencyStop();
+//     startMetrics();
+    
+//     RCLCPP_INFO(node_->get_logger(), "🏭 PRODUCTION Pick and Place with OPTIMIZED Retry Logic Starting...");
+
+//     try {
+//         // Create poses
+//         auto pick_pose = createPoseFromMmAndDegrees(pick_x_mm, pick_y_mm, pick_z_mm, 
+//                                                    pick_roll_deg, pick_pitch_deg, pick_yaw_deg);
+//         auto place_pose = createPoseFromMmAndDegrees(place_x_mm, place_y_mm, place_z_mm, 
+//                                                     place_roll_deg, place_pitch_deg, place_yaw_deg);
+//         double clearance_m = clearance_height_mm / 1000.0;
+
+//         auto pick_approach_pose = pick_pose;
+//         pick_approach_pose.position.z += clearance_m;
+
+//         auto place_approach_pose = place_pose;
+//         place_approach_pose.position.z += clearance_m;
+        
+//         // === ADAPTIVE TIMEOUTS ===
+//         auto home_timeout = std::chrono::seconds(static_cast<int>(safety_config_.timeouts.home_position_timeout));
+//         auto approach_timeout = std::chrono::seconds(static_cast<int>(safety_config_.timeouts.approach_planning_timeout));
+//         auto cartesian_timeout = std::chrono::seconds(static_cast<int>(safety_config_.timeouts.cartesian_planning_timeout));
+        
+//         // === PHASE 1: MOVE TO HOME (optimized timeout) ===
+//         checkEmergencyStop();
+//         RCLCPP_INFO(node_->get_logger(), "🏠 Phase 1: Moving to home position...");
+//         if (!planToJointWithRetry(safety_config_.home_joints, "move_to_home", home_timeout)) {
+//             return false;
+//         }
+//         if (!executePlan()) {
+//             recordFailure("Failed to execute move to home");
+//             return executeRecoverySequence("Failed to move to home");
+//         }
+//         recordPhaseCompletion("move_to_home");
+        
+//         // === PHASE 2: PLAN HOME -> PICK APPROACH (optimized timeout) ===
+//         checkEmergencyStop();
+//         RCLCPP_INFO(node_->get_logger(), "🎯 Phase 2: Planning home → pick approach with retry...");
+//         if (!planWithRetry(pick_approach_pose, "home_to_pick_approach", approach_timeout)) {
+//             recordFailure("Failed to find path home → pick approach after retrying");
+//             return false;
+//         }
+//         if (!executePlan()) {
+//             recordFailure("Failed to execute home → pick approach");
+//             return executeRecoverySequence("Failed to execute home → pick approach");
+//         }
+//         recordPhaseCompletion("home_to_pick_approach");
+        
+//         // === PHASE 3: PICK SEQUENCE (optimized Cartesian retry) ===
+//         checkEmergencyStop();
+//         openGripper();
+        
+//         checkEmergencyStop();
+//         RCLCPP_INFO(node_->get_logger(), "⬇️ Phase 3: Moving linearly to PICK pose with retry...");
+//         if (!planAndExecuteCartesianPathWithRetry({pick_pose}, "cartesian_to_pick", cartesian_timeout, 0.9)) {
+//             recordFailure("Failed Cartesian path to pick pose after retrying");
+//             return executeRecoverySequence("Failed Cartesian path to pick pose after retrying");
+//         }
+        
+//         checkEmergencyStop();
+//         closeGripper();
+        
+//         checkEmergencyStop();
+//         RCLCPP_INFO(node_->get_logger(), "⬆️ Phase 4: Retreating linearly from PICK pose with retry...");
+//         if (!planAndExecuteCartesianPathWithRetry({pick_approach_pose}, "cartesian_from_pick", cartesian_timeout, 0.9)) {
+//             openGripper();
+//             recordFailure("Failed to retreat from pick pose after retrying");
+//             return executeRecoverySequence("Failed to retreat from pick with object after retrying");
+//         }
+        
+//         // === PHASE 5: RETURN TO HOME ===
+//         checkEmergencyStop();
+//         RCLCPP_INFO(node_->get_logger(), "🏠 Phase 5: Returning to home as intermediate position...");
+//         if (!planToJointWithRetry(safety_config_.home_joints, "return_to_home_after_pick", home_timeout)) {
+//             recordFailure("Failed to plan return to home after pick");
+//             return executeRecoverySequence("Failed to return home after pick");
+//         }
+//         if (!executePlan()) {
+//             recordFailure("Failed to execute return to home after pick");
+//             return executeRecoverySequence("Failed to return home after pick");
+//         }
+//         recordPhaseCompletion("return_to_home_after_pick");
+        
+//         // === PHASE 6: PLAN HOME -> PLACE APPROACH ===
+//         checkEmergencyStop();
+//         RCLCPP_INFO(node_->get_logger(), "📦 Phase 6: Planning home → place approach with retry...");
+//         if (!planWithRetry(place_approach_pose, "home_to_place_approach", approach_timeout)) {
+//             recordFailure("Failed to find path home → place approach after retrying");
+//             return false;
+//         }
+//         if (!executePlan()) {
+//             recordFailure("Failed to execute home → place approach");
+//             return executeRecoverySequence("Failed to execute home → place approach");
+//         }
+//         recordPhaseCompletion("home_to_place_approach");
+        
+//         // === PHASE 7: PLACE SEQUENCE (optimized Cartesian retry) ===
+//         checkEmergencyStop();
+//         RCLCPP_INFO(node_->get_logger(), "⬇️ Phase 7: Moving linearly to PLACE pose with retry...");
+//         if (!planAndExecuteCartesianPathWithRetry({place_pose}, "cartesian_to_place", cartesian_timeout, 0.9)) {
+//             recordFailure("Failed Cartesian path to place pose after retrying");
+//             return false;
+//         }
+        
+//         checkEmergencyStop();
+//         openGripper();
+        
+//         checkEmergencyStop();
+//         RCLCPP_INFO(node_->get_logger(), "⬆️ Phase 8: Retreating linearly from PLACE pose with retry...");
+//         if (!planAndExecuteCartesianPathWithRetry({place_approach_pose}, "cartesian_from_place", cartesian_timeout, 0.9)) {
+//             recordFailure("Failed to retreat from place pose after retrying");
+//             return executeRecoverySequence("Failed to retreat from place pose after retrying");
+//         }
+        
+//         // === PHASE 9: FINAL RETURN TO HOME ===
+//         checkEmergencyStop();
+//         RCLCPP_INFO(node_->get_logger(), "🏠 Phase 9: Final return to home...");
+//         if (!planToJointWithRetry(safety_config_.home_joints, "final_return_to_home", home_timeout)) {
+//             RCLCPP_WARN(node_->get_logger(), "⚠️ Failed final return to home, but operation completed");
+//         } else if (!executePlan()) {
+//             RCLCPP_WARN(node_->get_logger(), "⚠️ Failed to execute final return to home, but operation completed");
+//         } else {
+//             recordPhaseCompletion("final_return_to_home");
+//         }
+        
+//         last_metrics_.success = true;
+//         RCLCPP_INFO(node_->get_logger(), "🎉 PRODUCTION Pick and Place with OPTIMIZED retry logic completed successfully!");
+        
+//         // Log detailed metrics
+//         RCLCPP_INFO(node_->get_logger(), "📊 Completed phases: %zu, Failed operations: %zu, Total retry operations: %zu",
+//                    last_metrics_.completed_phases.size(), 
+//                    last_metrics_.failed_operations.size(),
+//                    last_metrics_.retry_counts.size());
+        
+//         return true;
+        
+//     } catch (const RobotOperationError& e) {
+//         if (e.getType() == RobotOperationError::Type::SHUTDOWN_REQUESTED) {
+//             RCLCPP_WARN(node_->get_logger(), "🔌 Pick and place sequence interrupted by shutdown");
+//             recordFailure("Shutdown requested");
+//             return false;
+//         }
+//         recordFailure(e.what());
+//         RCLCPP_ERROR(node_->get_logger(), "❌ Pick and place failed: %s", e.what());
+//         executeRecoverySequence(e.what());
+//         return false;
+//     } catch (const std::exception& e) {
+//         recordFailure(std::string("Unexpected exception: ") + e.what());
+//         RCLCPP_ERROR(node_->get_logger(), "❌ Unexpected exception: %s", e.what());
+//         executeRecoverySequence(std::string("Unexpected exception: ") + e.what());
+//         return false;
+//     }
+// }
+
 bool RobotOperation::executeProfessionalPickAndPlace(
     double pick_x_mm, double pick_y_mm, double pick_z_mm,
     double pick_roll_deg, double pick_pitch_deg, double pick_yaw_deg,
@@ -494,7 +656,7 @@ bool RobotOperation::executeProfessionalPickAndPlace(
     checkEmergencyStop();
     startMetrics();
     
-    RCLCPP_INFO(node_->get_logger(), "🏭 PRODUCTION Pick and Place with OPTIMIZED Retry Logic Starting...");
+    RCLCPP_INFO(node_->get_logger(), "🏭 OPTIMIZED Pick and Place: Direct Pick→Place with Retry Logic Starting...");
 
     try {
         // Create poses
@@ -515,7 +677,7 @@ bool RobotOperation::executeProfessionalPickAndPlace(
         auto approach_timeout = std::chrono::seconds(static_cast<int>(safety_config_.timeouts.approach_planning_timeout));
         auto cartesian_timeout = std::chrono::seconds(static_cast<int>(safety_config_.timeouts.cartesian_planning_timeout));
         
-        // === PHASE 1: MOVE TO HOME (optimized timeout) ===
+        // === PHASE 1: MOVE TO HOME ===
         checkEmergencyStop();
         RCLCPP_INFO(node_->get_logger(), "🏠 Phase 1: Moving to home position...");
         if (!planToJointWithRetry(safety_config_.home_joints, "move_to_home", home_timeout)) {
@@ -527,7 +689,7 @@ bool RobotOperation::executeProfessionalPickAndPlace(
         }
         recordPhaseCompletion("move_to_home");
         
-        // === PHASE 2: PLAN HOME -> PICK APPROACH (optimized timeout) ===
+        // === PHASE 2: PLAN HOME -> PICK APPROACH ===
         checkEmergencyStop();
         RCLCPP_INFO(node_->get_logger(), "🎯 Phase 2: Planning home → pick approach with retry...");
         if (!planWithRetry(pick_approach_pose, "home_to_pick_approach", approach_timeout)) {
@@ -540,7 +702,7 @@ bool RobotOperation::executeProfessionalPickAndPlace(
         }
         recordPhaseCompletion("home_to_pick_approach");
         
-        // === PHASE 3: PICK SEQUENCE (optimized Cartesian retry) ===
+        // === PHASE 3: PICK SEQUENCE ===
         checkEmergencyStop();
         openGripper();
         
@@ -562,35 +724,43 @@ bool RobotOperation::executeProfessionalPickAndPlace(
             return executeRecoverySequence("Failed to retreat from pick with object after retrying");
         }
         
-        // === PHASE 5: RETURN TO HOME ===
+        // === PHASE 5: OPTIMIZED - DIRECT PICK APPROACH -> PLACE APPROACH ===
         checkEmergencyStop();
-        RCLCPP_INFO(node_->get_logger(), "🏠 Phase 5: Returning to home as intermediate position...");
-        if (!planToJointWithRetry(safety_config_.home_joints, "return_to_home_after_pick", home_timeout)) {
-            recordFailure("Failed to plan return to home after pick");
-            return executeRecoverySequence("Failed to return home after pick");
-        }
-        if (!executePlan()) {
-            recordFailure("Failed to execute return to home after pick");
-            return executeRecoverySequence("Failed to return home after pick");
-        }
-        recordPhaseCompletion("return_to_home_after_pick");
+        RCLCPP_INFO(node_->get_logger(), "🚀 Phase 5: OPTIMIZED - Planning direct pick approach → place approach with retry...");
+        RCLCPP_INFO(node_->get_logger(), "💡 Skipping intermediate home position for efficiency!");
         
-        // === PHASE 6: PLAN HOME -> PLACE APPROACH ===
-        checkEmergencyStop();
-        RCLCPP_INFO(node_->get_logger(), "📦 Phase 6: Planning home → place approach with retry...");
-        if (!planWithRetry(place_approach_pose, "home_to_place_approach", approach_timeout)) {
-            recordFailure("Failed to find path home → place approach after retrying");
-            return false;
+        if (!planWithRetry(place_approach_pose, "pick_approach_to_place_approach", approach_timeout)) {
+            // If direct path fails, fallback to the traditional home route
+            RCLCPP_WARN(node_->get_logger(), "⚠️ Direct pick→place path failed, falling back to home route...");
+            
+            RCLCPP_INFO(node_->get_logger(), "🏠 Fallback: Moving to home as intermediate position...");
+            if (!planToJointWithRetry(safety_config_.home_joints, "fallback_to_home_after_pick", home_timeout)) {
+                recordFailure("Failed to plan fallback to home after pick");
+                return executeRecoverySequence("Failed fallback to home after pick");
+            }
+            if (!executePlan()) {
+                recordFailure("Failed to execute fallback to home after pick");
+                return executeRecoverySequence("Failed fallback to home after pick");
+            }
+            recordPhaseCompletion("fallback_to_home_after_pick");
+            
+            // Now try home → place approach
+            RCLCPP_INFO(node_->get_logger(), "📦 Fallback: Planning home → place approach with retry...");
+            if (!planWithRetry(place_approach_pose, "fallback_home_to_place_approach", approach_timeout)) {
+                recordFailure("Failed fallback path home → place approach after retrying");
+                return false;
+            }
         }
-        if (!executePlan()) {
-            recordFailure("Failed to execute home → place approach");
-            return executeRecoverySequence("Failed to execute home → place approach");
-        }
-        recordPhaseCompletion("home_to_place_approach");
         
-        // === PHASE 7: PLACE SEQUENCE (optimized Cartesian retry) ===
+        if (!executePlan()) {
+            recordFailure("Failed to execute path to place approach");
+            return executeRecoverySequence("Failed to execute path to place approach");
+        }
+        recordPhaseCompletion("pick_approach_to_place_approach");
+        
+        // === PHASE 6: PLACE SEQUENCE ===
         checkEmergencyStop();
-        RCLCPP_INFO(node_->get_logger(), "⬇️ Phase 7: Moving linearly to PLACE pose with retry...");
+        RCLCPP_INFO(node_->get_logger(), "⬇️ Phase 6: Moving linearly to PLACE pose with retry...");
         if (!planAndExecuteCartesianPathWithRetry({place_pose}, "cartesian_to_place", cartesian_timeout, 0.9)) {
             recordFailure("Failed Cartesian path to place pose after retrying");
             return false;
@@ -600,15 +770,15 @@ bool RobotOperation::executeProfessionalPickAndPlace(
         openGripper();
         
         checkEmergencyStop();
-        RCLCPP_INFO(node_->get_logger(), "⬆️ Phase 8: Retreating linearly from PLACE pose with retry...");
+        RCLCPP_INFO(node_->get_logger(), "⬆️ Phase 7: Retreating linearly from PLACE pose with retry...");
         if (!planAndExecuteCartesianPathWithRetry({place_approach_pose}, "cartesian_from_place", cartesian_timeout, 0.9)) {
             recordFailure("Failed to retreat from place pose after retrying");
             return executeRecoverySequence("Failed to retreat from place pose after retrying");
         }
         
-        // === PHASE 9: FINAL RETURN TO HOME ===
+        // === PHASE 8: FINAL RETURN TO HOME ===
         checkEmergencyStop();
-        RCLCPP_INFO(node_->get_logger(), "🏠 Phase 9: Final return to home...");
+        RCLCPP_INFO(node_->get_logger(), "🏠 Phase 8: Final return to home...");
         if (!planToJointWithRetry(safety_config_.home_joints, "final_return_to_home", home_timeout)) {
             RCLCPP_WARN(node_->get_logger(), "⚠️ Failed final return to home, but operation completed");
         } else if (!executePlan()) {
@@ -618,7 +788,7 @@ bool RobotOperation::executeProfessionalPickAndPlace(
         }
         
         last_metrics_.success = true;
-        RCLCPP_INFO(node_->get_logger(), "🎉 PRODUCTION Pick and Place with OPTIMIZED retry logic completed successfully!");
+        RCLCPP_INFO(node_->get_logger(), "🎉 OPTIMIZED Pick and Place with direct pick→place completed successfully!");
         
         // Log detailed metrics
         RCLCPP_INFO(node_->get_logger(), "📊 Completed phases: %zu, Failed operations: %zu, Total retry operations: %zu",
