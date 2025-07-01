@@ -10,6 +10,8 @@
 #include <mutex>
 #include <memory>
 
+#include <std_srvs/srv/set_bool.hpp>
+
 namespace trajectory_plan
 {
 
@@ -244,6 +246,9 @@ private:
     // === ADD THESE NEW COLLISION VALIDATION METHODS ===
     bool validateTrajectoryCollisionFree();
     bool validateCurrentStateCollisionFree();
+
+    // 
+    rclcpp::Client<std_srvs::srv::SetBool>::SharedPtr gripper_client_;
 };
 
 } // namespace trajectory_plan

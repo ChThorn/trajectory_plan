@@ -6,6 +6,7 @@
 #include <moveit/robot_model/robot_model.h>
 #include <moveit/robot_state/robot_state.h>
 
+
 namespace trajectory_plan
 {
 
@@ -37,6 +38,11 @@ RobotOperation::RobotOperation(
     validateJointPosition(safety_config_.emergency_joints, "default_emergency");
     
     initialized_ = true;
+
+    // 🤖 ADD REAL GRIPPER SERVICE CLIENT
+    gripper_client_ = node_->create_client<std_srvs::srv::SetBool>("gripper_control");
+    RCLCPP_INFO(node_->get_logger(), "🤖 Real CB07 Gripper service client initialized");
+
     operational_.store(true);
     RCLCPP_INFO(node_->get_logger(), "✅ RobotOperation initialized with enhanced safety");
 }
@@ -835,20 +841,80 @@ void RobotOperation::recordRetry(const std::string& operation)
                 operation.c_str(), last_metrics_.retry_counts[operation]);
 }
 
+// void RobotOperation::openGripper()
+// {
+//     checkEmergencyStop();
+//     RCLCPP_INFO(node_->get_logger(), "🔓 GRIPPER: Opening... (simulated)");
+//     waitForMotionComplete(1.0);
+//     RCLCPP_INFO(node_->get_logger(), "✅ GRIPPER: Opened");
+// }
+
 void RobotOperation::openGripper()
 {
     checkEmergencyStop();
-    RCLCPP_INFO(node_->get_logger(), "🔓 GRIPPER: Opening... (simulated)");
-    waitForMotionComplete(1.0);
-    RCLCPP_INFO(node_->get_logger(), "✅ GRIPPER: Opened");
+    RCLCPP_INFO(node_->get_logger(), "🔓 REAL GRIPPER: Opening CB07...");
+    
+    if (!gripper_client_->wait_for_service(std::chrono::seconds(2))) {
+        RCLCPP_WARN(node_->get_logger(), "⚠️ Gripper service not available, using simulation");
+        waitForMotionComplete(1.0);
+        RCLCPP_INFO(node_->get_logger(), "✅ GRIPPER: Opened (simulated)");
+        return;
+    }
+    
+    auto request = std::make_shared<std_srvs::srv::SetBool::Request>();
+    request->data = true;  // true = OPEN
+    
+    auto future = gripper_client_->async_send_request(request);
+    
+    if (rclcpp::spin_until_future_complete(node_, future, std::chrono::seconds(5)) == 
+        rclcpp::FutureReturnCode::SUCCESS) {
+        auto response = future.get();
+        if (response->success) {
+            RCLCPP_INFO(node_->get_logger(), "✅ REAL GRIPPER: %s", response->message.c_str());
+        } else {
+            RCLCPP_ERROR(node_->get_logger(), "❌ REAL GRIPPER: Failed to open - %s", response->message.c_str());
+        }
+    } else {
+        RCLCPP_ERROR(node_->get_logger(), "❌ REAL GRIPPER: Service call timeout");
+    }
 }
+
+// void RobotOperation::closeGripper()
+// {
+//     checkEmergencyStop();
+//     RCLCPP_INFO(node_->get_logger(), "🤏 GRIPPER: Closing... (simulated)");
+//     waitForMotionComplete(1.0);
+//     RCLCPP_INFO(node_->get_logger(), "✅ GRIPPER: Closed - object grasped");
+// }
 
 void RobotOperation::closeGripper()
 {
     checkEmergencyStop();
-    RCLCPP_INFO(node_->get_logger(), "🤏 GRIPPER: Closing... (simulated)");
-    waitForMotionComplete(1.0);
-    RCLCPP_INFO(node_->get_logger(), "✅ GRIPPER: Closed - object grasped");
+    RCLCPP_INFO(node_->get_logger(), "🤏 REAL GRIPPER: Closing CB07...");
+    
+    if (!gripper_client_->wait_for_service(std::chrono::seconds(2))) {
+        RCLCPP_WARN(node_->get_logger(), "⚠️ Gripper service not available, using simulation");
+        waitForMotionComplete(1.0);
+        RCLCPP_INFO(node_->get_logger(), "✅ GRIPPER: Closed (simulated)");
+        return;
+    }
+    
+    auto request = std::make_shared<std_srvs::srv::SetBool::Request>();
+    request->data = false;  // false = CLOSE
+    
+    auto future = gripper_client_->async_send_request(request);
+    
+    if (rclcpp::spin_until_future_complete(node_, future, std::chrono::seconds(5)) == 
+        rclcpp::FutureReturnCode::SUCCESS) {
+        auto response = future.get();
+        if (response->success) {
+            RCLCPP_INFO(node_->get_logger(), "✅ REAL GRIPPER: %s", response->message.c_str());
+        } else {
+            RCLCPP_ERROR(node_->get_logger(), "❌ REAL GRIPPER: Failed to close - %s", response->message.c_str());
+        }
+    } else {
+        RCLCPP_ERROR(node_->get_logger(), "❌ REAL GRIPPER: Service call timeout");
+    }
 }
 
 void RobotOperation::checkAndPrintCurrentPose()

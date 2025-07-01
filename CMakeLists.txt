@@ -20,6 +20,7 @@ find_package(control_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(action_msgs REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
+find_package(std_srvs REQUIRED)
 
 # Generate action interfaces FIRST (creates trajectory_plan target)
 rosidl_generate_interfaces(${PROJECT_NAME}
@@ -60,6 +61,7 @@ ament_target_dependencies(${PROJECT_NAME}_lib
   geometry_msgs
   visualization_msgs
   action_msgs
+  std_srvs
 )
 
 # Create executable
