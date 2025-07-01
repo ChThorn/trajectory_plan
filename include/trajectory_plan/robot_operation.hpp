@@ -52,6 +52,10 @@ struct SafetyConfiguration {
     bool validate_joint_limits = true;
     bool validate_reachability = true;
 
+    // === vertical and horizontal clearance ===
+    double extra_vertical_clearance = 0.03;    // Extra 30mm vertical
+    double horizontal_approach_distance = 0.04; // 40mm horizontal approach
+
     // === NEW: Adaptive timeout configuration ===
     struct {
         double home_position_timeout = 15.0;      // Reduced for simple moves

@@ -115,6 +115,12 @@ install(
   OPTIONAL
 )
 
+# Install launch files
+install(
+  DIRECTORY launch/
+  DESTINATION share/${PROJECT_NAME}/launch
+)
+
 # Export package information
 ament_export_include_directories(include)
 ament_export_libraries(${PROJECT_NAME}_lib)

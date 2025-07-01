@@ -673,10 +673,20 @@ bool RobotOperation::executeProfessionalPickAndPlace(
         double clearance_m = clearance_height_mm / 1000.0;
 
         auto pick_approach_pose = pick_pose;
-        pick_approach_pose.position.z += clearance_m;
+        // pick_approach_pose.position.z += clearance_m;
+        
+        // Vertical clearance (user + extra)
+        pick_approach_pose.position.z += clearance_m + safety_config_.extra_vertical_clearance;
+        // Horizontal approach (come from behind in X direction)
+        pick_approach_pose.position.x -= safety_config_.horizontal_approach_distance;
 
         auto place_approach_pose = place_pose;
-        place_approach_pose.position.z += clearance_m;
+        // place_approach_pose.position.z += clearance_m;
+
+        // Vertical clearance (user + extra)  
+        place_approach_pose.position.z += clearance_m + safety_config_.extra_vertical_clearance;
+        // Horizontal approach (come from behind in X direction)
+        place_approach_pose.position.x -= safety_config_.horizontal_approach_distance;
         
         // === ADAPTIVE TIMEOUTS ===
         auto home_timeout = std::chrono::seconds(static_cast<int>(safety_config_.timeouts.home_position_timeout));
@@ -849,6 +859,36 @@ void RobotOperation::recordRetry(const std::string& operation)
 //     RCLCPP_INFO(node_->get_logger(), "✅ GRIPPER: Opened");
 // }
 
+// void RobotOperation::openGripper()
+// {
+//     checkEmergencyStop();
+//     RCLCPP_INFO(node_->get_logger(), "🔓 REAL GRIPPER: Opening CB07...");
+    
+//     if (!gripper_client_->wait_for_service(std::chrono::seconds(2))) {
+//         RCLCPP_WARN(node_->get_logger(), "⚠️ Gripper service not available, using simulation");
+//         waitForMotionComplete(1.0);
+//         RCLCPP_INFO(node_->get_logger(), "✅ GRIPPER: Opened (simulated)");
+//         return;
+//     }
+    
+//     auto request = std::make_shared<std_srvs::srv::SetBool::Request>();
+//     request->data = true;  // true = OPEN
+    
+//     auto future = gripper_client_->async_send_request(request);
+    
+//     if (rclcpp::spin_until_future_complete(node_, future, std::chrono::seconds(5)) == 
+//         rclcpp::FutureReturnCode::SUCCESS) {
+//         auto response = future.get();
+//         if (response->success) {
+//             RCLCPP_INFO(node_->get_logger(), "✅ REAL GRIPPER: %s", response->message.c_str());
+//         } else {
+//             RCLCPP_ERROR(node_->get_logger(), "❌ REAL GRIPPER: Failed to open - %s", response->message.c_str());
+//         }
+//     } else {
+//         RCLCPP_ERROR(node_->get_logger(), "❌ REAL GRIPPER: Service call timeout");
+//     }
+// }
+
 void RobotOperation::openGripper()
 {
     checkEmergencyStop();
@@ -866,8 +906,10 @@ void RobotOperation::openGripper()
     
     auto future = gripper_client_->async_send_request(request);
     
-    if (rclcpp::spin_until_future_complete(node_, future, std::chrono::seconds(5)) == 
-        rclcpp::FutureReturnCode::SUCCESS) {
+    // FIXED: Use future.wait_for() instead of spin_until_future_complete()
+    auto status = future.wait_for(std::chrono::seconds(5));
+    
+    if (status == std::future_status::ready) {
         auto response = future.get();
         if (response->success) {
             RCLCPP_INFO(node_->get_logger(), "✅ REAL GRIPPER: %s", response->message.c_str());
@@ -887,6 +929,36 @@ void RobotOperation::openGripper()
 //     RCLCPP_INFO(node_->get_logger(), "✅ GRIPPER: Closed - object grasped");
 // }
 
+// void RobotOperation::closeGripper()
+// {
+//     checkEmergencyStop();
+//     RCLCPP_INFO(node_->get_logger(), "🤏 REAL GRIPPER: Closing CB07...");
+    
+//     if (!gripper_client_->wait_for_service(std::chrono::seconds(2))) {
+//         RCLCPP_WARN(node_->get_logger(), "⚠️ Gripper service not available, using simulation");
+//         waitForMotionComplete(1.0);
+//         RCLCPP_INFO(node_->get_logger(), "✅ GRIPPER: Closed (simulated)");
+//         return;
+//     }
+    
+//     auto request = std::make_shared<std_srvs::srv::SetBool::Request>();
+//     request->data = false;  // false = CLOSE
+    
+//     auto future = gripper_client_->async_send_request(request);
+    
+//     if (rclcpp::spin_until_future_complete(node_, future, std::chrono::seconds(5)) == 
+//         rclcpp::FutureReturnCode::SUCCESS) {
+//         auto response = future.get();
+//         if (response->success) {
+//             RCLCPP_INFO(node_->get_logger(), "✅ REAL GRIPPER: %s", response->message.c_str());
+//         } else {
+//             RCLCPP_ERROR(node_->get_logger(), "❌ REAL GRIPPER: Failed to close - %s", response->message.c_str());
+//         }
+//     } else {
+//         RCLCPP_ERROR(node_->get_logger(), "❌ REAL GRIPPER: Service call timeout");
+//     }
+// }
+
 void RobotOperation::closeGripper()
 {
     checkEmergencyStop();
@@ -904,8 +976,10 @@ void RobotOperation::closeGripper()
     
     auto future = gripper_client_->async_send_request(request);
     
-    if (rclcpp::spin_until_future_complete(node_, future, std::chrono::seconds(5)) == 
-        rclcpp::FutureReturnCode::SUCCESS) {
+    // FIXED: Use future.wait_for() instead of spin_until_future_complete()
+    auto status = future.wait_for(std::chrono::seconds(5));
+    
+    if (status == std::future_status::ready) {
         auto response = future.get();
         if (response->success) {
             RCLCPP_INFO(node_->get_logger(), "✅ REAL GRIPPER: %s", response->message.c_str());
