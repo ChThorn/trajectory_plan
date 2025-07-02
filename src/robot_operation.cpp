@@ -668,6 +668,7 @@ bool RobotOperation::executeProfessionalPickAndPlace(
         // Create poses
         auto pick_pose = createPoseFromMmAndDegrees(pick_x_mm, pick_y_mm, pick_z_mm, 
                                                    pick_roll_deg, pick_pitch_deg, pick_yaw_deg);
+        
         auto place_pose = createPoseFromMmAndDegrees(place_x_mm, place_y_mm, place_z_mm, 
                                                     place_roll_deg, place_pitch_deg, place_yaw_deg);
         double clearance_m = clearance_height_mm / 1000.0;
@@ -675,18 +676,20 @@ bool RobotOperation::executeProfessionalPickAndPlace(
         auto pick_approach_pose = pick_pose;
         // pick_approach_pose.position.z += clearance_m;
         
-        // Vertical clearance (user + extra)
+        // ========= Vertical clearance (user + extra) ========
         pick_approach_pose.position.z += clearance_m + safety_config_.extra_vertical_clearance;
         // Horizontal approach (come from behind in X direction)
         pick_approach_pose.position.x -= safety_config_.horizontal_approach_distance;
+        // =================================================
 
         auto place_approach_pose = place_pose;
         // place_approach_pose.position.z += clearance_m;
 
-        // Vertical clearance (user + extra)  
+        // ========= Vertical clearance (user + extra) ========  
         place_approach_pose.position.z += clearance_m + safety_config_.extra_vertical_clearance;
         // Horizontal approach (come from behind in X direction)
         place_approach_pose.position.x -= safety_config_.horizontal_approach_distance;
+        // =================================================
         
         // === ADAPTIVE TIMEOUTS ===
         auto home_timeout = std::chrono::seconds(static_cast<int>(safety_config_.timeouts.home_position_timeout));
